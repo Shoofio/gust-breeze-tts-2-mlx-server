@@ -9,6 +9,8 @@ A local text-to-speech server for Macs with Apple Silicon. You send it text over
 
 It runs [Breeze TTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2), an open-weight speech model by BreezeBlue, on the Mac's GPU through [MLX](https://github.com/ml-explore/mlx). BreezeBlue's own code streams only on NVIDIA GPUs; on a Mac it runs more than twice slower than real time and can't stream. This server makes the Mac a real-time option, with the model's full feature set.
 
+**Listen:** [side-by-side samples](https://huggingface.co/Shoof/Gust-Breeze-TTS-2-MLX-Realtime#samples), an RTX 3090 running BreezeBlue's code against this build on an M4 Pro, with the same text, voice direction and seed.
+
 ## What it can do
 
 - **Clone a voice** from a short recording (up to 30 s) and its transcript.
