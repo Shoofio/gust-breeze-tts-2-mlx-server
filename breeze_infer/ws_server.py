@@ -90,7 +90,7 @@ from breeze_infer.ws_session import (
     SessionConfig,
     StartMark,
 )
-from models.fast_streaming import NoRoomError
+from models.runtime_seam import NoRoomError
 
 if TYPE_CHECKING:
     from breeze_infer.api import Components

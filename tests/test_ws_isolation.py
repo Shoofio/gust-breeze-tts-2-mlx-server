@@ -24,7 +24,6 @@ import signal
 import socket
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -38,7 +37,7 @@ from breeze_infer.model_loading import LoadedModel
 from breeze_infer.routes_health import Readiness
 from breeze_infer.routes_speech import CpuTokenizer
 from breeze_infer.settings import settings_from_args
-from tests.fakes import FakeTokenizer, open_no_voices
+from tests.fakes import MLX_CHECKPOINT_DIR, FakeTokenizer, open_no_voices
 from tests.ws_helpers import (
     BIG_PIECE_CHUNKS,
     BIG_START,
@@ -52,7 +51,7 @@ from tests.ws_helpers import (
     wait_until,
 )
 
-MODEL_DIR = str(Path(__file__).parent)  # any existing directory; nothing loads it
+MODEL_DIR = str(MLX_CHECKPOINT_DIR)  # nothing loads it
 SPEECH_PATH = "/v1/audio/speech"
 # Client A's piece takes at least this long on the GPU thread (150 chunks of 10 ms each).
 CHUNK_DELAY = 0.01

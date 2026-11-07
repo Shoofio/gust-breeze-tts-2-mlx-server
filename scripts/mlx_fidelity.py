@@ -31,7 +31,6 @@ from bench_mac import lines
 from breeze_infer.audio import encode_prompt_waveform
 from breeze_infer.http_fields import DEFAULT_INSTRUCTION
 from breeze_infer.synthesis import CodesRef, prepare_piece
-from models.fast_streaming import select_fast_cfg
 from models.mlx_streaming import (
     _CONDITIONAL,
     _NEGATIVE,
@@ -42,6 +41,7 @@ from models.mlx_streaming import (
     _to_mlx_prompt,
     load_mlx_runtime,
 )
+from models.runtime_seam import select_fast_cfg
 
 HUB = Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface")) / "hub"
 BF16 = "models--mlx-community--Breeze-TTS-2-mlx"

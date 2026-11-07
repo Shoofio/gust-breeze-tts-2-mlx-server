@@ -45,7 +45,7 @@ from breeze_infer.gpu import GpuCloseTimeout, GpuGate, GpuSession, GpuUnavailabl
 from breeze_infer.limits import MAX_BODY_BYTES
 from breeze_infer.routes_health import Readiness
 from breeze_infer.routes_speech import _serve_speech
-from models.fast_streaming import NoRoomError
+from models.runtime_seam import NoRoomError
 from tests.fakes import FakeCodec, FakeTokenizer, RecordingEvents
 from tests.test_routes_speech import (  # noqa: F401 -- fixtures reused by name
     SPEECH_PATH,
@@ -243,7 +243,7 @@ class _RaisingRuntime:
 
 
 def test_no_room_error_during_priming_maps_to_400_text_too_long() -> None:
-    """T046 review, finding 1: `models.fast_streaming.NoRoomError` (a `ValueError`
+    """T046 review, finding 1: `models.runtime_seam.NoRoomError` (a `ValueError`
     subclass) raised once priming has moved past piece 0 within a single step must
     still become `400 text_too_long`, the same as the pre-check for piece 0 itself."""
     readiness = Readiness()

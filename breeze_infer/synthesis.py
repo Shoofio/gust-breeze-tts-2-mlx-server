@@ -34,7 +34,7 @@ from breeze_infer.templates import (
     prepare_prefix_inputs,
     prepare_suffix_inputs,
 )
-from models.fast_streaming import (
+from models.runtime_seam import (
     NoRoomError,
     PromptLength,
     max_reference_prefix_len,
@@ -43,7 +43,7 @@ from models.fast_streaming import (
 
 if TYPE_CHECKING:
     from breeze_infer.reference_audio import DecodedAudio
-    from models.fast_streaming import FastStreamingChunk
+    from models.runtime_seam import FastStreamingChunk
 
 # --- Reference (synthesis-internal; data-model.md "Reference") ---------------------
 
@@ -617,8 +617,8 @@ def generate_piece(
     ``chunks.close()`` always runs, even if this generator itself is closed early (a
     client disconnect closes the piece's `breeze_infer.gpu.GpuSession`, which closes this
     generator, which then closes ``chunks`` here) -- the runtime's own generator must be
-    closed to release whatever it holds, exactly as `models/fast_streaming.py`'s own
-    callers already do.
+    closed to release whatever it holds (the MLX runtime resets the shared codec's
+    streaming state when its generator closes).
     """
     chunks = runtime.iter_audio_chunks(
         inputs,

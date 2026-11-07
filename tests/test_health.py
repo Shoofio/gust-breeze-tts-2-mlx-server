@@ -10,7 +10,6 @@ import json
 import socket
 from collections.abc import Iterator
 from dataclasses import replace
-from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
@@ -24,7 +23,7 @@ from breeze_infer.gpu import GpuGate, GpuThread
 from breeze_infer.routes_health import Readiness, install_health
 from breeze_infer.routes_speech import CpuTokenizer
 from breeze_infer.settings import settings_from_args
-from tests.fakes import FakeRuntime, open_no_voices
+from tests.fakes import MLX_CHECKPOINT_DIR, FakeRuntime, open_no_voices
 
 LOADING = {"status": "loading", "error": "model is loading", "code": "loading"}
 WS_PORT = 8081
@@ -33,7 +32,7 @@ WS_PORT = 8081
 def _components(readiness: Readiness) -> Components:
     # The model directory is never opened: nothing loads in these tests.
     return Components(
-        settings=settings_from_args([str(Path(__file__).parent)]),
+        settings=settings_from_args([str(MLX_CHECKPOINT_DIR)]),
         events=Emitter(io.StringIO(), lambda: 0.0),
         gate=GpuGate(),
         gpu=GpuThread("cpu", lambda _device: None),
@@ -236,7 +235,7 @@ def test_bc_24_ws_bind_failure_reports_zero(readiness: Readiness) -> None:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
         port = taken.getsockname()[1]
-        settings = settings_from_args([str(Path(__file__).parent), "--ws-port", str(port)])
+        settings = settings_from_args([str(MLX_CHECKPOINT_DIR), "--ws-port", str(port)])
 
         sockets = bind_ws_sockets(settings, Emitter(sink, lambda: 0.0))
 
@@ -259,7 +258,7 @@ def test_bc_24_health_reports_the_bound_ws_port(readiness: Readiness) -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         free = probe.getsockname()[1]
-    settings = settings_from_args([str(Path(__file__).parent), "--ws-port", str(free)])
+    settings = settings_from_args([str(MLX_CHECKPOINT_DIR), "--ws-port", str(free)])
     sockets = bind_ws_sockets(settings, Emitter(io.StringIO(), lambda: 0.0))
     components = replace(_components(readiness), ws_port=lambda: bound_port(sockets))
     readiness.mark_ready(FakeRuntime())
@@ -272,7 +271,7 @@ def test_bc_24_health_reports_the_bound_ws_port(readiness: Readiness) -> None:
 
 
 def test_a_disabled_ws_port_binds_nothing_and_reports_zero() -> None:
-    settings = settings_from_args([str(Path(__file__).parent), "--ws-port", "disabled"])
+    settings = settings_from_args([str(MLX_CHECKPOINT_DIR), "--ws-port", "disabled"])
 
     sockets = bind_ws_sockets(settings, Emitter(io.StringIO(), lambda: 0.0))
 

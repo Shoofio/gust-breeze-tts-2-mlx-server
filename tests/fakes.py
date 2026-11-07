@@ -1,6 +1,6 @@
 """GPU-free stand-ins used at the model edge by unit tests.
 
-These replace only the pieces that need a CUDA device and a checkpoint (the audio
+These replace only the pieces that need the GPU and a checkpoint (the audio
 tokenizer/codec, the text tokenizer, and the streaming runtime). Everything the tests
 exercise above that edge (templates, store, routes, the session machine, the segmenter)
 is the real code.
@@ -8,9 +8,8 @@ is the real code.
 **Principle V deviation** (plan.md "Complexity Tracking", re-recorded from 001's deviation
 at `api-alignment:specs/001-saved-voice-references/plan.md:167-176`): API, streaming and
 WebSocket tests use `FakeRuntime` in place of the real model because the checkpoint needs
-a CUDA GPU and about 8 GiB. The fake stands in at the GPU edge only. The real path is
-covered by the `gpu` test suite and the live SillyTavern gates, which must pass before
-each phase closes.
+an Apple Silicon GPU and several GB of memory. The fake stands in at the GPU edge only. The
+real path is covered by the `mlx` test suite (`tests/mlx/`) and the live SillyTavern gates.
 
 **Expiry**: delete this module and switch the no-GPU suite to the real runtime once a
 CPU-loadable miniature Breeze checkpoint fixture exists under `tests/fixtures/`.
@@ -22,7 +21,7 @@ import hashlib
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -35,15 +34,24 @@ from breeze_infer.voice_prefix import VoicePrefixCache
 from breeze_infer.voice_registry import VoiceRegistry
 from breeze_infer.voice_store import VoiceStore
 
-# ``models.fast_streaming`` pulls in the cudagraph submodules and costs real wall-clock
-# time to import (finding #8, T021 review 2) even though most of this module's own
-# consumers (FakeCodec, codec_frame_count, RecordingEvents, FakeTokenizer) need none of
-# it. So the real import is deferred to inside ``FakeRuntime.iter_audio_chunks`` and
-# ``FakeRuntime.max_new_tokens_room`` below; this one is TYPE_CHECKING-only (never runs)
-# purely so the return-type annotation resolves for a type checker/linter without paying
-# for it at runtime.
+# The runtime seam (``models.runtime_seam``) is imported lazily inside ``FakeRuntime``'s
+# methods (finding #8, T021 review 2: most of this module's own consumers -- FakeCodec,
+# codec_frame_count, RecordingEvents, FakeTokenizer -- need none of it); this one is
+# TYPE_CHECKING-only (never runs) purely so the return-type annotation resolves for a type
+# checker/linter.
 if TYPE_CHECKING:
-    from models.fast_streaming import FastStreamingChunk
+    from models.runtime_seam import FastStreamingChunk
+
+
+# A checkpoint directory `settings_from_args` accepts: just the `config.json` of a bf16 MLX
+# checkpoint. Nothing loads weights from it; the model load is faked wherever it is used.
+MLX_CHECKPOINT_DIR = Path(__file__).resolve().parent / "fixtures" / "mlx_checkpoint"
+
+
+def mlx_checkpoint(directory: Path) -> Path:
+    """Make ``directory`` look like a bf16 MLX checkpoint to `settings_from_args` and return it."""
+    (directory / "config.json").write_text('{"model_type": "breeze_tts"}', encoding="utf-8")
+    return directory
 
 
 class RecordingEvents:
@@ -196,7 +204,7 @@ class _EncoderOutput:
     ``audio_codes``. This fake does not subclass or import the real ``ModelOutput``:
     importing ``transformers`` cold took several minutes of wall-clock time in this
     sandbox (mostly filesystem stats across its many submodules on a slow mount, not CPU
-    -- the same class of cost finding #8 raised about ``models.fast_streaming``), which
+    -- the same class of cost finding #8 raised about the runtime modules), which
     isn't worth paying for one field's dict/attribute duality.
 
     ``result[0]`` and ``result["audio_codes"]`` both give ``audio_codes`` itself (not a
@@ -301,31 +309,24 @@ class FakeCodec:
 
 @dataclass(frozen=True)
 class FakeStreamingConfig:
-    """The subset of ``models.fast_streaming.FastStreamingConfig`` that
+    """The subset of ``models.runtime_seam.FastStreamingConfig`` that
     ``FakeRuntime.max_new_tokens_room``/``frame_cap``/``_context_room`` read
-    (``max_new_tokens``, the per-request ceiling; ``max_seq_len``, the context length;
-    ``fast_backbone_prefill``, whether the prefill bucket-pads). A plain local
-    dataclass, not the real one: constructing a `FakeRuntime` must never import
-    ``models.fast_streaming`` just to build its default ``config`` (the module-import
-    cost this file's docstring and finding #8 already avoid). Field defaults match
-    ``FastStreamingConfig``'s own defaults.
+    (``max_new_tokens``, the per-request ceiling; ``max_seq_len``, the context length).
+    A plain local dataclass, not the real one, so constructing a `FakeRuntime` imports
+    nothing from the runtime. Field defaults match ``FastStreamingConfig``'s own defaults.
     """
 
     max_new_tokens: int = 1500
     max_seq_len: int = 1024
-    # Real default is False (``_prefill_plan``): the prefill runs at the exact prompt
-    # length until the fast backbone-prefill path is turned on, which is what pads it
-    # up to the nearest ``_PREFILL_TOKEN_GRANULARITY`` bucket. See ``_context_room``.
-    fast_backbone_prefill: bool = False
 
 
 class FakeRuntime:
     """Yields constant-valued chunks shaped like ``FastStreamingChunk``; records every
     call so tests can inspect it.
 
-    Chunk shape and the loop's own structure are copied from
-    ``models/fast_streaming.py:FastBreezeStreamingRuntime.iter_audio_chunks`` (roughly
-    lines 1062-1178):
+    Chunk shape and the loop's own structure were copied from the CUDA runtime's
+    ``iter_audio_chunks`` (upstream's ``models/fast_streaming.py``), whose rules
+    ``models/mlx_streaming.py`` keeps:
     - **Samples per chunk** = ``frames_per_chunk * CODEC_SAMPLES_PER_FRAME`` (derived, not
       hard-coded): the real runtime decodes ``codec_frames`` codec frames per chunk, and
       each frame is ``CODEC_SAMPLES_PER_FRAME`` (1920) samples. ``frames_per_chunk``
@@ -350,7 +351,8 @@ class FakeRuntime:
       -- *not* another ``frames_per_chunk``-sized chunk. Default ``None`` means no such
       chunk (the common fast-codec case above). This is on top of, not instead of, the
       ``chunks``/``frames_per_chunk`` chunks from the main loop.
-    - **Timing keys** match the real per-chunk dict exactly: every chunk from the main
+    - **Timing keys** match the CUDA runtime's per-chunk dict (the MLX runtime sends an
+      empty one, and nothing in the server reads it): every chunk from the main
       loop has ``chunk_index``, ``codec_frames``, ``decode_launch_ms``, ``total_frames``,
       ``is_final``, ``codec_launch_ms`` and ``audio_d2h_ms``; chunk 0 of that loop
       additionally has ``ttfa_internal_ms`` and ``prefill_path``, plus ``prefill_gpu_ms``
@@ -380,7 +382,7 @@ class FakeRuntime:
     Alignment with the real runtime (review finding: this fake used to accept calls the
     real runtime rejects, so a test could pass here and still raise in production):
     - ``iter_audio_chunks`` takes exactly the real method's keyword set
-      (``models/fast_streaming.py:FastBreezeStreamingRuntime.iter_audio_chunks``):
+      (``MlxBreezeStreamingRuntime.iter_audio_chunks``):
       ``request_id``, ``seed``, ``token_observer``, ``prefix``, and the five per-request
       sampling overrides (``temperature``, ``top_k``, ``top_p``, ``repetition_penalty``,
       ``max_new_tokens``). There is no ``reference=`` keyword on the real method and none
@@ -400,13 +402,13 @@ class FakeRuntime:
       on these calls -- there is none.
     - ``prefix`` is read strictly, like the real runtime's own ``prefix.prefix_len``: a
       caller passing a reference prefix must give a real-shaped object (the real
-      ``ReferencePrefix``, or any stand-in with a ``prefix_len`` attribute, e.g.
+      ``MlxReferencePrefix``, or any stand-in with a ``prefix_len`` attribute, e.g.
       ``SimpleNamespace(prefix_len=64)``) -- not an arbitrary value that happens not to
       crash a lenient lookup.
     - The five overrides are validated exactly as the real ``_require_valid_overrides``
       does, by calling that same function (imported lazily, like ``FastStreamingChunk``
       below, so constructing or draining a `FakeRuntime` that never overrides anything
-      still never pays to import ``models.fast_streaming``): ``None`` is the default,
+      still never imports the runtime seam): ``None`` is the default,
       anything else must satisfy the real per-override rules (``_OVERRIDE_RULES``: a
       range, and an integer for ``top_k``/``max_new_tokens``, never a bool). Since ``iter_audio_chunks`` is a generator function, validation
       -- here and on the real runtime -- runs on the first ``next()``, not at call time.
@@ -417,17 +419,8 @@ class FakeRuntime:
       ceiling -- then the context room from the prefill length) by calling the real
       ``_require_valid_overrides`` and ``prompt_length`` helpers and porting
       ``frame_cap``'s two-line rule directly. ``_context_room`` uses the **exact**
-      prompt length by default and bucket-pads to the nearest
-      ``_PREFILL_TOKEN_GRANULARITY`` (32) only when ``self.config.fast_backbone_prefill``
-      is set -- mirroring ``_prefill_plan``'s own default (``FastStreamingConfig
-      .fast_backbone_prefill`` is ``False`` unless a profile turns the fast backbone-
-      prefill path on).
-      **Approximation gap**: a frozen warmup cache can still refuse an unwarmed bucket
-      and fall back to an exact-length eager prefill even with the flag on
-      (`models/fast_streaming.py:955-998`); this fake has no captured prefill graphs or
-      warmup state to consult, so with the flag on it always bucket-pads as if every
-      bucket were warmed. A test asserting an *exact* room number against a frozen/eager
-      fallback boundary needs the real runtime (`tests/gpu/`), not this.
+      prompt length, as the MLX runtime does (``tests/test_mlx_room.py`` checks the two
+      agree).
     - ``iter_audio_chunks`` raises the real runtime's ``ValueError`` when
       ``max_new_tokens_room`` is ``<= 0``, before recording the call -- inputs with no
       ``attention_mask`` (the bare ``{}`` a few call sites still pass, where there is no
@@ -520,10 +513,10 @@ class FakeRuntime:
         self.closed = 0
 
     def build_reference_prefix(self, prefix_inputs: dict[str, Any]) -> Any:
-        """``FastBreezeStreamingRuntime.build_reference_prefix``'s result shape, with no KV
+        """``MlxBreezeStreamingRuntime.build_reference_prefix``'s result shape, with no KV
         (class docstring), and its guard: a prefix leaving under ``MIN_SUFFIX_ROOM`` slots of
         the context is refused with ``ValueError``, as the real one refuses it."""
-        from models.fast_streaming import max_reference_prefix_len
+        from models.runtime_seam import max_reference_prefix_len
 
         self.prefix_builds.append(prefix_inputs)
         prefix_len = int(prefix_inputs["attention_mask"].shape[1])
@@ -532,7 +525,7 @@ class FakeRuntime:
         return SimpleNamespace(prefix_len=prefix_len, kv=None)
 
     def frame_cap(self, requested: int | None) -> int:
-        """Ports ``FastBreezeStreamingRuntime.frame_cap`` exactly (it's two lines and
+        """Ports ``MlxBreezeStreamingRuntime.frame_cap`` exactly (it's two lines and
         pure Python -- no need to import the real one just for this)."""
         if requested is None:
             requested = self.default_max_new_tokens or self.config.max_new_tokens
@@ -541,51 +534,26 @@ class FakeRuntime:
     def max_new_tokens_room(
         self, requested: int | None, inputs: dict[str, Any], *, prefix_len: int = 0
     ) -> int:
-        """Approximates ``FastBreezeStreamingRuntime.max_new_tokens_room`` -- see the
+        """Approximates ``MlxBreezeStreamingRuntime.max_new_tokens_room`` -- see the
         class docstring's "Approximation gap" paragraph for what this can't reproduce
         without real captured prefill graphs."""
         # Lazy for the same reason as in iter_audio_chunks below (finding #8).
-        from models.fast_streaming import prompt_length
+        from models.runtime_seam import prompt_length
 
         return self.room_for_length(requested, prompt_length(inputs), prefix_len=prefix_len)
 
     def room_for_length(self, requested: int | None, length: Any, *, prefix_len: int = 0) -> int:
-        """``FastBreezeStreamingRuntime.room_for_length``: the room above, for a prompt known
+        """``MlxBreezeStreamingRuntime.room_for_length``: the room above, for a prompt known
         only by its ``PromptLength``."""
-        from models.fast_streaming import _require_valid_overrides
+        from models.runtime_seam import _require_valid_overrides
 
         _require_valid_overrides(max_new_tokens=requested)
         return min(self.frame_cap(requested), self._context_room(length.seq_len, prefix_len))
 
     def _context_room(self, seq_len: int, prefix_len: int) -> int:
-        """The real ``_context_room``/``_prefill_plan`` rule: exact prompt length by
-        default, bucketed only when ``self.config.fast_backbone_prefill`` is set (review
-        finding #2 -- the real ``_prefill_plan`` only pads when the fast backbone-prefill
-        path is on, ``FastStreamingConfig.fast_backbone_prefill`` default ``False``; this
-        used to bucket unconditionally, which is backwards from the real default).
-
-        With the flag on, the bucketed length still falls back to the exact length
-        whenever bucketing would leave less than ``MIN_SUFFIX_FRAMES`` (12) of room --
-        not only when it would overflow ``max_seq_len`` outright (review finding #4,
-        f021d7b's real ``_prefill_plan``): padding a short suffix up to its bucket could
-        otherwise eat most of a registered prefix's promised room, so the graph path is
-        abandoned a bit before the hard overflow point, and every longer prompt after
-        that point stays eager too (keeps room monotonic in prompt length -- see the
-        real docstring).
-        """
-        from models.fast_streaming import _PREFILL_TOKEN_GRANULARITY, MIN_SUFFIX_FRAMES
-
-        exact_len = prefix_len + seq_len
-        if not self.config.fast_backbone_prefill:
-            return self.config.max_seq_len - exact_len - 1
-        bucketed_len = (
-            prefix_len
-            + -(-seq_len // _PREFILL_TOKEN_GRANULARITY) * _PREFILL_TOKEN_GRANULARITY
-        )
-        bucketed_room = self.config.max_seq_len - bucketed_len - 1
-        if bucketed_room < MIN_SUFFIX_FRAMES:
-            return self.config.max_seq_len - exact_len - 1
-        return bucketed_room
+        """The real runtime's context room: the decode loop stops once
+        ``prefill_len + step >= max_seq_len - 1``, with the prefill at its exact length."""
+        return self.config.max_seq_len - (prefix_len + seq_len) - 1
 
     def iter_audio_chunks(
         self,
@@ -601,9 +569,8 @@ class FakeRuntime:
         repetition_penalty: float | None = None,
         max_new_tokens: int | None = None,
     ) -> Iterator[FastStreamingChunk]:
-        # Lazy: models.fast_streaming (cudagraph submodules) is slow to import, and most
-        # of tests/fakes.py's own consumers never call this method (finding #8).
-        from models.fast_streaming import (
+        # Lazy, as above (finding #8).
+        from models.runtime_seam import (
             FastStreamingChunk,
             NoRoomError,
             _require_valid_overrides,
@@ -808,7 +775,7 @@ def open_no_voices(_loaded: Any, prefix_cache: VoicePrefixCache | None = None) -
             codebook_size=CODEC_CODEBOOK_SIZE,
             codec_fingerprint="0" * 64,
             events=RecordingEvents(),
-            clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+            clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
         ),
         registry=VoiceRegistry(),
         prefix_cache=prefix_cache,

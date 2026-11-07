@@ -1,9 +1,7 @@
 """Tests for breeze_infer/settings.py: the launch-configuration parser.
 
-Covers build_parser()/settings_from_args() -- the new home for command-line
-parsing (T016). Tests for runtime behavior (ApiSettings, configure_compile_cache,
-_load_app, FastBreezeStreamingRuntime properties) stay in test_runtime_flags.py;
-none of those exercise a parser, so nothing moved.
+Covers build_parser()/settings_from_args() -- the home for command-line
+parsing (T016) -- and the machine and checkpoint refusals.
 """
 
 from __future__ import annotations
@@ -18,6 +16,13 @@ import pytest
 from breeze_infer.settings import Platform, build_parser, settings_from_args
 
 
+@pytest.fixture(autouse=True)
+def _mlx_config(tmp_path: Path) -> None:
+    """Every test's ``tmp_path`` is a bf16 MLX checkpoint unless the test writes another
+    ``config.json`` (or removes it)."""
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "breeze_tts"}))
+
+
 def test_defaults(tmp_path: Path) -> None:
     settings = settings_from_args([str(tmp_path)])
 
@@ -30,14 +35,7 @@ def test_defaults(tmp_path: Path) -> None:
     assert settings.chunk_first == 1
     assert settings.chunk_max == 25
     assert settings.voices_dir == Path("voices")
-    assert settings.fast_all is None
-    assert settings.fast_text_encoder is False
-    assert settings.fast_backbone_prefill is False
-    assert settings.fast_backbone_decode is False
-    assert settings.fast_depth_decoder is False
-    assert settings.fast_codec is False
-    assert settings.attn_implementation == "eager"
-    assert settings.compile_cache_dir is None
+    assert settings.weights == "bf16"
 
 
 def test_settings_is_frozen(tmp_path: Path) -> None:
@@ -159,56 +157,6 @@ def test_voices_dir_override(tmp_path: Path) -> None:
     assert settings.voices_dir == Path("my-voices")
 
 
-def test_fast_all_tri_state(tmp_path: Path) -> None:
-    assert settings_from_args([str(tmp_path)]).fast_all is None
-    assert settings_from_args([str(tmp_path), "--fast-all"]).fast_all is True
-    assert settings_from_args([str(tmp_path), "--no-fast-all"]).fast_all is False
-
-
-def test_individual_fast_flags(tmp_path: Path) -> None:
-    settings = settings_from_args(
-        [
-            str(tmp_path),
-            "--fast-text-encoder",
-            "--fast-backbone-prefill",
-            "--fast-backbone-decode",
-            "--fast-depth-decoder",
-            "--fast-codec",
-        ]
-    )
-    assert settings.fast_text_encoder is True
-    assert settings.fast_backbone_prefill is True
-    assert settings.fast_backbone_decode is True
-    assert settings.fast_depth_decoder is True
-    assert settings.fast_codec is True
-
-
-def test_attn_implementation_choices(tmp_path: Path) -> None:
-    assert settings_from_args([str(tmp_path)]).attn_implementation == "eager"
-    settings = settings_from_args(
-        [str(tmp_path), "--attn-implementation", "sdpa"]
-    )
-    assert settings.attn_implementation == "sdpa"
-
-
-def test_attn_implementation_rejects_flash_attention_2(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit):
-        settings_from_args(
-            [str(tmp_path), "--attn-implementation", "flash_attention_2"]
-        )
-    assert "--attn-implementation" in capsys.readouterr().err
-
-
-def test_compile_cache_dir_override(tmp_path: Path) -> None:
-    cache_dir = tmp_path / "cc"
-    settings = settings_from_args(
-        [str(tmp_path), "--compile-cache-dir", str(cache_dir)]
-    )
-    assert settings.compile_cache_dir == cache_dir
-
-
 def test_model_path_is_required(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         settings_from_args([])
@@ -225,12 +173,12 @@ def test_build_parser_returns_argument_parser() -> None:
 def test_settings_never_reads_environ(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Principle III: env resolution (e.g. TORCHINDUCTOR_CACHE_DIR) is the
-    composition root's job, not the parser's -- so an unset compile cache dir
-    must stay None regardless of what's in the environment."""
-    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/should/not/be/read")
-    settings = settings_from_args([str(tmp_path)])
-    assert settings.compile_cache_dir is None
+    """Principle III: env resolution (e.g. the BREEZE_MLX_* speed settings) is the composition
+    root's job, not the parser's: the environment changes nothing here."""
+    before = settings_from_args([str(tmp_path)])
+    monkeypatch.setenv("BREEZE_MLX_QUANT", "depth:8")
+    monkeypatch.setenv("HF_HOME", "/should/not/be/read")
+    assert settings_from_args([str(tmp_path)]) == before
 
 
 @pytest.mark.parametrize("value", ["", ",", " , "])
@@ -665,16 +613,13 @@ def test_cors_non_ascii_digit_port_rejected(
     assert "ASCII" in capsys.readouterr().err
 
 
-# --- backend selection and refusals (specs/005-mlx-mac-inference, contracts/launch-and-events.md) ---
+# --- machine and checkpoint refusals (specs/005-mlx-mac-inference, contracts/launch-and-events.md) ---
 
 GIB = 1024**3
 MAC = Platform("darwin", "arm64", 16 * GIB)
 LINUX = Platform("linux", "x86_64", 64 * GIB)
 
-PYTORCH_DOWNLOAD = (
-    "uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx-8bit "
-    "--revision c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
-)
+WEIGHTS_HINT = "scripts/start_breeze_mac.sh names the download command for each precision"
 
 
 def _refusal(argv: list[str], capsys: pytest.CaptureFixture[str], **kwargs: Any) -> str:
@@ -689,22 +634,31 @@ def _write_config(directory: Path, config: dict[str, Any]) -> None:
     (directory / "config.json").write_text(json.dumps(config))
 
 
-def test_backend_is_cuda_without_a_platform(tmp_path: Path) -> None:
-    settings = settings_from_args([str(tmp_path)])
-    assert settings.backend == "cuda"
-    assert settings.weights == "bf16"
+def test_an_apple_silicon_mac_with_16_gb_is_accepted(tmp_path: Path) -> None:
+    assert settings_from_args([str(tmp_path)], platform=MAC).weights == "bf16"
 
 
-def test_backend_defaults_to_mlx_on_apple_silicon(tmp_path: Path) -> None:
-    _write_config(tmp_path, {"model_type": "breeze_tts"})
-    assert settings_from_args([str(tmp_path)], platform=MAC).backend == "mlx"
+@pytest.mark.parametrize("argv", [[], ["--backend", "mlx"]], ids=["default", "explicit"])
+def test_backend_mlx_is_still_accepted(tmp_path: Path, argv: list[str]) -> None:
+    assert settings_from_args([str(tmp_path), *argv], platform=MAC).weights == "bf16"
 
 
-def test_backend_defaults_to_cuda_on_linux(tmp_path: Path) -> None:
-    assert settings_from_args([str(tmp_path)], platform=LINUX).backend == "cuda"
+def test_backend_cuda_is_refused_with_a_pointer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal([str(tmp_path), "--backend", "cuda"], capsys, platform=MAC)
+    assert "error: --backend cuda was removed: this server runs on Apple Silicon (MLX) only" in err
+    assert "northcraftfoundries/breeze-tts2-fast-streaming-api" in err
 
 
-def test_mlx_settings_carry_the_checkpoint_precision(tmp_path: Path) -> None:
+def test_backend_cuda_is_refused_even_without_a_platform(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    err = _refusal([str(tmp_path), "--backend", "cuda"], capsys)
+    assert "--backend cuda was removed" in err
+
+
+def test_settings_carry_the_checkpoint_precision(tmp_path: Path) -> None:
     _write_config(
         tmp_path,
         {
@@ -712,37 +666,25 @@ def test_mlx_settings_carry_the_checkpoint_precision(tmp_path: Path) -> None:
             "quantization": {"group_size": 32, "bits": 8, "mode": "mxfp8"},
         },
     )
-    settings = settings_from_args([str(tmp_path), "--backend", "mlx"], platform=MAC)
+    settings = settings_from_args([str(tmp_path)], platform=MAC)
     assert settings.weights == "8bit"
 
 
-def test_mlx_on_linux_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    err = _refusal([str(tmp_path), "--backend", "mlx"], capsys, platform=LINUX)
-    assert "error: --backend mlx needs an Apple Silicon Mac (this machine: linux x86_64)" in err
+def test_linux_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    err = _refusal([str(tmp_path)], capsys, platform=LINUX)
+    assert "error: the server needs an Apple Silicon Mac (this machine: linux x86_64)" in err
 
 
-def test_mlx_on_an_intel_mac_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_an_intel_mac_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     intel = Platform("darwin", "x86_64", 32 * GIB)
-    err = _refusal([str(tmp_path), "--backend", "mlx"], capsys, platform=intel)
-    assert "error: --backend mlx needs an Apple Silicon Mac (this machine: darwin x86_64)" in err
+    err = _refusal([str(tmp_path)], capsys, platform=intel)
+    assert "error: the server needs an Apple Silicon Mac (this machine: darwin x86_64)" in err
 
 
-def test_mlx_with_less_than_16_gb_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_less_than_16_gb_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     small = Platform("darwin", "arm64", 8 * GIB)
     err = _refusal([str(tmp_path)], capsys, platform=small)
-    assert "error: --backend mlx needs at least 16 GB of memory (this machine: 8 GB)" in err
-
-
-def test_cuda_on_macos_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    err = _refusal([str(tmp_path), "--backend", "cuda"], capsys, platform=MAC)
-    assert (
-        "error: --backend cuda is not available on macOS; use --backend mlx (the default here)"
-        in err
-    )
+    assert "error: the server needs at least 16 GB of memory (this machine: 8 GB)" in err
 
 
 @pytest.mark.parametrize(
@@ -755,58 +697,24 @@ def test_cuda_on_macos_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[
         ["--compile-cache-dir", "cache"],
     ],
 )
-def test_mlx_refuses_a_cuda_only_option(
+def test_the_removed_cuda_options_are_unknown(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], options: list[str]
 ) -> None:
     err = _refusal([str(tmp_path), *options], capsys, platform=MAC)
-    assert f"error: {options[0]} only apply to --backend cuda; remove them" in err
+    assert f"unrecognized arguments: {options[0]}" in err
 
 
-def test_mlx_names_every_cuda_only_option_in_argv_order(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    argv = [
-        str(tmp_path),
-        "--compile-cache-dir",
-        "cache",
-        "--fast-codec",
-        "--attn-implementation=sdpa",
-    ]
-    err = _refusal(argv, capsys, platform=MAC)
-    assert (
-        "error: --compile-cache-dir, --fast-codec, --attn-implementation "
-        "only apply to --backend cuda; remove them"
-    ) in err
-
-
-def test_attn_implementation_omitted_on_cuda_resolves_to_eager(tmp_path: Path) -> None:
-    settings = settings_from_args([str(tmp_path)], platform=LINUX)
-    assert settings.attn_implementation == "eager"
-
-
-def test_cuda_checkpoint_with_the_mlx_backend_is_refused(
+def test_the_pytorch_checkpoint_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _write_config(tmp_path, {"model_type": "breeze"})
     err = _refusal([str(tmp_path)], capsys, platform=MAC)
     assert (
-        f"error: {tmp_path} is the PyTorch checkpoint; --backend mlx needs the MLX weights: "
-        f"{PYTORCH_DOWNLOAD}"
+        f"error: {tmp_path} is the PyTorch checkpoint; the server needs MLX weights ({WEIGHTS_HINT})"
     ) in err
 
 
-def test_mlx_checkpoint_with_the_cuda_backend_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _write_config(tmp_path, {"model_type": "breeze_tts"})
-    err = _refusal([str(tmp_path)], capsys, platform=LINUX)
-    assert (
-        f"error: {tmp_path} holds MLX weights; --backend cuda needs: "
-        "uvx --from huggingface_hub hf download BreezeBlue/Breeze-TTS-2"
-    ) in err
-
-
-def test_mlx_checkpoint_with_unsupported_quantization_is_refused(
+def test_a_checkpoint_with_unsupported_quantization_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _write_config(
@@ -823,21 +731,24 @@ def test_mlx_checkpoint_with_unsupported_quantization_is_refused(
     )
 
 
-def test_mlx_without_a_readable_config_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("content", [None, "{not json", "[1, 2]"], ids=["missing", "not-json", "not-an-object"])
+def test_a_checkpoint_without_a_readable_config_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], content: str | None
 ) -> None:
-    err = _refusal([str(tmp_path)], capsys, platform=MAC)
-    assert f"error: {tmp_path} has no readable config.json; --backend mlx needs" in err
-
-
-def test_cuda_tolerates_a_missing_or_unreadable_config(tmp_path: Path) -> None:
-    assert settings_from_args([str(tmp_path)], platform=LINUX).backend == "cuda"
-    (tmp_path / "config.json").write_text("{not json")
-    assert settings_from_args([str(tmp_path)], platform=LINUX).backend == "cuda"
+    config = tmp_path / "config.json"
+    if content is None:
+        config.unlink()
+    else:
+        config.write_text(content)
+    err = _refusal([str(tmp_path)], capsys)
+    assert (
+        f"error: {tmp_path} has no readable config.json; the server needs MLX weights ({WEIGHTS_HINT})"
+    ) in err
 
 
 def test_platform_detect_works_without_sysconf(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Windows has no os.sysconf, and api.main calls detect() on every launch.
+    # Off macOS, detect() never calls os.sysconf (memory stays 0); the Apple Silicon check
+    # refuses the launch with the machine's name.
     monkeypatch.setattr("breeze_infer.settings.sys.platform", "win32")
     monkeypatch.delattr("breeze_infer.settings.os.sysconf", raising=False)
     detected = Platform.detect()

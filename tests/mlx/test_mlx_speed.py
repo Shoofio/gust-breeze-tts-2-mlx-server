@@ -9,7 +9,6 @@ import pytest
 
 from breeze_infer.http_fields import DEFAULT_INSTRUCTION
 from breeze_infer.synthesis import NoRef, prepare_piece
-from models.fast_streaming import select_fast_cfg
 from models.mlx_streaming import (
     _CONDITIONAL,
     _NEGATIVE,
@@ -17,6 +16,7 @@ from models.mlx_streaming import (
     _Generation,
     _to_mlx_prompt,
 )
+from models.runtime_seam import select_fast_cfg
 
 pytestmark = pytest.mark.mlx
 

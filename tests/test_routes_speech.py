@@ -7,7 +7,7 @@ GPU-free stand-ins at the model edge (`FakeRuntime`, `FakeCodec`, `FakeTokenizer
 Principle V deviation `tests/fakes.py`'s own docstring records. `FakeRuntime` itself carries no
 `tokenizer`/`model`/`audio_tokenizer` (most of its other consumers never need them), so
 `_fake_runtime` attaches the same fakes `tests/test_synthesis.py` uses directly onto it,
-duck-typing the real `FastBreezeStreamingRuntime`'s own attributes (`models/fast_streaming.py`).
+duck-typing the real `MlxBreezeStreamingRuntime`'s own attributes (`models/mlx_streaming.py`).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +58,7 @@ from breeze_infer.voice_store import VoiceStore
 from tests.fakes import (
     CODEC_CODEBOOK_SIZE,
     CODEC_CODEBOOKS,
+    MLX_CHECKPOINT_DIR,
     FakeCodec,
     FakeRuntime,
     FakeStreamingConfig,
@@ -72,7 +73,7 @@ SPEECH_PATH = "/v1/audio/speech"
 
 def _fake_runtime(**kwargs: Any) -> FakeRuntime:
     """A `FakeRuntime` wired up with the `tokenizer`/`model`/`audio_tokenizer` attributes
-    the real `FastBreezeStreamingRuntime` carries (`models/fast_streaming.py`'s
+    the real `MlxBreezeStreamingRuntime` carries (`models/mlx_streaming.py`'s
     `self.tokenizer`/`self.model`/`self.audio_tokenizer`) -- `routes_speech.py` reads
     them straight off the object `Readiness.require_ready` returns.
     """
@@ -88,7 +89,7 @@ def _build_components(
 ) -> Components:
     # The model directory is never opened: nothing loads in these tests (test_health.py's
     # own _components does the same).
-    argv = [str(Path(__file__).parent)]
+    argv = [str(MLX_CHECKPOINT_DIR)]
     if split_chars is not None:
         argv += ["--split-chars", str(split_chars)]
     # What the model load installs: its two copies of the runtime's tokenizer. A plain
@@ -566,20 +567,16 @@ def test_the_model_load_copies_the_tokenizer_on_the_gpu_thread(
         copied_on.append(threading.current_thread().name)
         return original_deepcopy(value)
 
-    monkeypatch.setattr(
-        model_loading, "configure_compile_cache", lambda *_args: (Path("cache"), "hit")
+    from models import mlx_streaming
+
+    runtime = SimpleNamespace(
+        tokenizer=tokenizer,
+        warmup=lambda: 12.345,
+        speed=mlx_streaming.MlxSpeedOptions(),
     )
-    monkeypatch.setattr(
-        model_loading, "load_runtime", lambda *_args, **_kwargs: (tokenizer, object(), object())
-    )
-    monkeypatch.setattr(model_loading, "update_generation_config_for_breeze", lambda _model: None)
-    monkeypatch.setattr(
-        model_loading,
-        "FastBreezeStreamingRuntime",
-        lambda *_args, **_kwargs: SimpleNamespace(fast_enabled=False, tokenizer=tokenizer),
-    )
+    monkeypatch.setattr(mlx_streaming, "load_mlx_runtime", lambda *_args, **_kwargs: runtime)
     monkeypatch.setattr(model_loading.copy, "deepcopy", recording_deepcopy)
-    settings = settings_from_args([str(Path(__file__).parent)])
+    settings = settings_from_args([str(MLX_CHECKPOINT_DIR)])
     gpu = GpuThread("cpu", lambda _device: None)
     try:
         load = partial(model_loading.load_model, settings, "cpu", {})
@@ -590,7 +587,8 @@ def test_the_model_load_copies_the_tokenizer_on_the_gpu_thread(
     # Both copies -- the pre-gate check's and the anchor sizing's (review 34 finding 5) -- are
     # made here, on the GPU thread while loading, never on the event loop.
     pre_gate_copy, sizing_copy = tokenizer.copies
-    assert (loaded.report["backend"], loaded.report["weights"]) == ("cuda", "bf16")
+    assert (loaded.report["backend"], loaded.report["weights"]) == ("mlx", "bf16")
+    assert loaded.report["warmup_ms"] == 12.35
     assert loaded.cpu_tokenizer is pre_gate_copy
     assert loaded.sizing_tokenizer is sizing_copy
     assert len(copied_on) == 2 and all(name.startswith("breeze-gpu") for name in copied_on)
@@ -871,7 +869,7 @@ def _voice_services(voices_dir: Path, events: RecordingEvents) -> VoiceServices:
         codebook_size=CODEC_CODEBOOK_SIZE,
         codec_fingerprint="f" * 64,
         events=events,
-        clock=lambda: datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc),
+        clock=lambda: datetime(2026, 9, 26, 12, 0, tzinfo=UTC),
     )
     store.scan()
     return VoiceServices(
@@ -1329,7 +1327,7 @@ def test_42_1_a_stored_prefix_the_runtime_would_not_build_is_refused_before_the_
     """A voice already on disk (registered under a larger context, say) whose prefix leaves
     under MIN_SUFFIX_ROOM slots: the short text has room, but `build_reference_prefix` would
     refuse it, a 500 after the gate. It's the pre-gate `400 text_too_long` instead."""
-    from models.fast_streaming import MIN_SUFFIX_ROOM
+    from models.runtime_seam import MIN_SUFFIX_ROOM
 
     length = _prefix_len(NARRATOR_TEXT, VOICE_CODES)
     runtime = _voice_runtime(

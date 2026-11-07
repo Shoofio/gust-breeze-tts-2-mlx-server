@@ -210,8 +210,8 @@ def _resolve_segment_audio_codes(
     Validation runs on the caller's own dtype and values, *before* the int16 cast: a
     float/bool/object array, a byte-order or stride quirk, or an out-of-range code
     that slipped through would otherwise be silently coerced or crash the conversion,
-    and would only surface later as a CUDA device assert deep in the backbone, which
-    poisons the whole process (review #1/#2).
+    and would only surface later as an out-of-range lookup deep in the backbone
+    (review #1/#2).
     """
     codes = segment.get("audio_codes")
     if codes is None:
@@ -317,14 +317,12 @@ def _codec_facts(model_config: Any) -> tuple[int, int]:
 
     ``codebook_size`` has no such fallback (review #8): it reaches templates as a
     **model attribute**, ``model_config.codec_config.codebook_size`` -- the backbone
-    config's own record of the codec it was loaded with, the same attribute
-    ``models/fast_streaming.py`` already reads as ``self._codec_codebook_size``. A
+    config's own record of the codec it was loaded with. A
     missing value means the loaded model can't say what its own codec's valid code
     range is, so this raises rather than quietly assuming 2048.
 
     It is then cross-checked against the backbone embedding's own layout via
-    ``codebook_pad_token_id``: ``models/fast_streaming.py``'s
-    ``range(self._codec_codebook_size, int(self.model.config.vocab_size))`` treats
+    ``codebook_pad_token_id``: the model treats
     every vocab id from ``codebook_size`` up to (not including) ``vocab_size`` as a
     reserved special id, and ``codebook_pad_token_id`` is one of those ids (2050 for
     the real checkpoint, with ``codebook_size`` 2048 and ``vocab_size`` 2051 -- 2

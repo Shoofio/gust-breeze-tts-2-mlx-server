@@ -40,7 +40,7 @@ from breeze_infer.synthesis import (
     stand_in_reference,
 )
 from breeze_infer.templates import prepare_prefix_inputs
-from models.fast_streaming import NoRoomError, PromptLength, prompt_length
+from models.runtime_seam import NoRoomError, PromptLength, prompt_length
 from tests.fakes import (
     CODEC_SAMPLES_PER_FRAME,
     FakeCodec,
@@ -247,11 +247,11 @@ def test_inline_reference_is_encoded_once_and_reused_across_pieces_and_cfg_rows(
 
 
 def _streaming_chunk(value: float, codec_frames: int) -> SimpleNamespace:
-    """A `models.fast_streaming.FastStreamingChunk`-shaped object with the one field
+    """A `models.runtime_seam.FastStreamingChunk`-shaped object with the one field
     ``ramp_pcm`` reads (``.audio``; ``samples_per_frame`` is now a caller-supplied
     parameter, review finding #8, so ``.codec_frames`` is no longer read by ``ramp_pcm``
     itself -- it only sizes ``.audio`` here) -- a plain `SimpleNamespace` rather than the
-    real class, so these tests never pay to import ``models.fast_streaming`` (finding #8;
+    real class, so these tests never pay to import ``models.runtime_seam`` (finding #8;
     the real class is exercised for real by the `generate_piece` tests below, which go
     through `FakeRuntime`)."""
     return SimpleNamespace(
@@ -598,18 +598,12 @@ def test_a_voice_reference_needs_its_resolved_voice() -> None:
         stand_in_reference(VoiceRef(voice_id="alice", ref_text_override=None), None, 16)
 
 
-@pytest.mark.parametrize("fast_backbone_prefill", [False, True], ids=["exact", "bucketed"])
 @pytest.mark.parametrize("cfg_scale", [1.0, 2.5, 0.0])
-def test_a_voice_prefix_stand_in_predicts_the_prefix_paths_room(
-    cfg_scale: float, fast_backbone_prefill: bool
-) -> None:
-    """The prefix path prefills only the suffix after the cached prefix, so its room differs
-    from the codes path's once prefill buckets pad the suffix alone: the stand-in must give the
-    room the prefix path will really have, on every CFG branch shape. A small context makes the
-    room, not the cap, decide."""
-    runtime = FakeRuntime(
-        config=FakeStreamingConfig(max_seq_len=400, fast_backbone_prefill=fast_backbone_prefill)
-    )
+def test_a_voice_prefix_stand_in_predicts_the_prefix_paths_room(cfg_scale: float) -> None:
+    """The prefix path prefills only the suffix after the cached prefix: the stand-in must give
+    the room the prefix path will really have, on every CFG branch shape. A small context makes
+    the room, not the cap, decide."""
+    runtime = FakeRuntime(config=FakeStreamingConfig(max_seq_len=400))
     runtime.model = model_with_codec_facts()
     stand_in = stand_in_reference(
         VoiceRef(voice_id="alice", ref_text_override=None), None, 16, voice=VOICE

@@ -50,11 +50,11 @@ from breeze_infer.limits import (
     MAX_TEXT_CHARS,
 )
 from breeze_infer.settings import Settings, settings_from_args
-from tests.fakes import RecordingEvents
+from tests.fakes import RecordingEvents, mlx_checkpoint
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return settings_from_args([str(tmp_path)])
+    return settings_from_args([str(mlx_checkpoint(tmp_path))])
 
 
 def _reference_payload(reference: ReferenceSpec) -> dict[str, object]:

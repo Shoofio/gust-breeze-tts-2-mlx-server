@@ -6,13 +6,14 @@ Concrete classes, one job each:
   `try_acquire()` and answers `409 busy` on failure; a WebSocket piece queues with
   `await acquire()`. Both hand back a `GpuLease`; releasing it passes the gate straight to the
   next waiter.
-- `GpuThread` decides *where* GPU work runs: every CUDA call (model load, prepare, each
+- `GpuThread` decides *where* GPU work runs: every GPU call (model load, prepare, each
   `next(gen)`, each `gen.close()`) goes through one thread, so device selection and RNG state
   stay on that thread and a `close()` can never overlap a `next()`.
 - `GpuSession` ties the two together for one generation, so HTTP and WebSocket share a single
   rule for the end of a generation: close the generator on the GPU thread, then release.
 
-None imports torch: production injects `torch.cuda.set_device`, tests inject a stub.
+None imports torch or mlx: production injects the device selection (a no-op on MLX, which has
+one GPU), tests inject a stub.
 """
 
 from __future__ import annotations

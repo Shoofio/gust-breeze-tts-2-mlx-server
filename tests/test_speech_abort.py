@@ -35,7 +35,7 @@ from breeze_infer.streaming import ClientAbortLogFilter, SendTimeout, SpeechResp
 
 # FakeRuntime imports this lazily on the first step, i.e. on the GPU thread in the middle of a
 # request; on a slow mount that takes tens of seconds and would blow every bound below.
-from models import fast_streaming  # noqa: F401
+from models import runtime_seam  # noqa: F401
 from tests.fakes import CODEC_SAMPLES_PER_FRAME, FakeRuntime, RecordingEvents
 
 T = TypeVar("T")

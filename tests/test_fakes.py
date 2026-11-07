@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from models.fast_streaming import FastStreamingChunk
+from models.runtime_seam import FastStreamingChunk
 from tests.fakes import (
     CODEC_CODEBOOK_SIZE,
     CODEC_SAMPLE_RATE,
@@ -43,7 +43,7 @@ def test_reports_sample_rate_24000() -> None:
 
 
 def test_records_seed_overrides_inputs_and_prefix_per_piece() -> None:
-    # No ``reference=`` here (or on the real runtime, models/fast_streaming.py): a
+    # No ``reference=`` here (or on the real runtime, models/mlx_streaming.py): a
     # reference reaches iter_audio_chunks either baked into ``inputs`` (ref_audio_codes,
     # the "codes" Reference variant) or as ``prefix`` (a cached-KV "prefix" variant).
     # synthesis.py's resolve_reference/prepare_piece build one of those two shapes; a
@@ -110,7 +110,7 @@ _INVALID_OVERRIDES = [
     {"top_k": 2.5},
     {"max_new_tokens": 2.5},
     # bool is an int subclass in Python, but the real runtime rejects it explicitly
-    # (tests/test_fast_streaming.py's own _INVALID_OVERRIDES doesn't cover this case).
+    # (tests/test_runtime_seam.py's own _INVALID_OVERRIDES doesn't cover this case).
     {"top_k": True},
     {"max_new_tokens": False},
 ]
@@ -146,13 +146,10 @@ def test_max_new_tokens_room_rejects_invalid_requested() -> None:
         FakeRuntime().max_new_tokens_room(2.5, _room_inputs(10))
 
 
-@pytest.mark.parametrize("fast_backbone_prefill", [False, True], ids=["exact", "bucketed"])
-def test_room_for_length_matches_max_new_tokens_room(fast_backbone_prefill: bool) -> None:
-    from models.fast_streaming import prompt_length
+def test_room_for_length_matches_max_new_tokens_room() -> None:
+    from models.runtime_seam import prompt_length
 
-    runtime = FakeRuntime(
-        config=FakeStreamingConfig(max_seq_len=256, fast_backbone_prefill=fast_backbone_prefill)
-    )
+    runtime = FakeRuntime(config=FakeStreamingConfig(max_seq_len=256))
     for seq_len in (10, 100, 240, 255):
         inputs = {"attention_mask": torch.ones((1, seq_len))}
         assert runtime.room_for_length(40, prompt_length(inputs)) == (
@@ -161,7 +158,7 @@ def test_room_for_length_matches_max_new_tokens_room(fast_backbone_prefill: bool
 
 
 def test_fake_config_defaults_match_the_real_config() -> None:
-    from models.fast_streaming import FastStreamingConfig
+    from models.runtime_seam import FastStreamingConfig
 
     real = FastStreamingConfig()
     fake = FakeStreamingConfig()
@@ -200,62 +197,23 @@ def test_max_new_tokens_room_shrinks_with_prompt_and_prefix_length() -> None:
 
 
 def test_max_new_tokens_room_measures_the_negative_prompt_when_cfg_is_zero() -> None:
-    # cfg_scale 0 runs the negative prompt alone (the real _branch_shape). With
-    # fast_backbone_prefill on, 100 tokens pad to 128, so 256 - 128 - 1 frames remain,
-    # not 256 - 100 - 1 (exact) or 256 - 32 - 1 (the *positive* prompt's own length).
-    runtime = FakeRuntime(
-        config=FakeStreamingConfig(max_seq_len=256, fast_backbone_prefill=True)
-    )
+    # cfg_scale 0 runs the negative prompt alone (the real _branch_shape), so its 100 tokens
+    # count: 256 - 100 - 1 frames remain, not 256 - 10 - 1 (the *positive* prompt's own length).
+    runtime = FakeRuntime(config=FakeStreamingConfig(max_seq_len=256))
     inputs = {
         **_room_inputs(10),
         "cfg_scale": 0.0,
         "cfg_negative_prompt_ids": np.ones((1, 100)),
         "cfg_negative_prompt_attention_mask": np.ones((1, 100)),
     }
-    assert runtime.max_new_tokens_room(1500, inputs) == 127
+    assert runtime.max_new_tokens_room(1500, inputs) == 155
 
 
-def test_context_room_is_exact_by_default_and_bucketed_only_when_configured() -> None:
-    # review finding #2: the real _prefill_plan only bucket-pads when the fast
-    # backbone-prefill path is on (FastStreamingConfig.fast_backbone_prefill, default
-    # False); this fake must default to the same exact-length behavior, not bucket
-    # unconditionally.
-    exact = FakeRuntime(config=FakeStreamingConfig(max_seq_len=256))
-    bucketed = FakeRuntime(
-        config=FakeStreamingConfig(max_seq_len=256, fast_backbone_prefill=True)
-    )
-    inputs = _room_inputs(100)
+def test_context_room_is_the_exact_prompt_length() -> None:
+    runtime = FakeRuntime(config=FakeStreamingConfig(max_seq_len=256))
 
-    assert exact.max_new_tokens_room(1500, inputs) == 256 - 100 - 1  # exact prompt length
-    assert bucketed.max_new_tokens_room(1500, inputs) == 256 - 128 - 1  # padded to 128
-
-
-def test_context_room_falls_back_to_exact_when_bucketing_leaves_too_little_suffix_room() -> None:
-    # review finding #4 (f021d7b's real _prefill_plan): with the flag on, the bucketed
-    # length is abandoned in favor of the exact length not just when it would overflow
-    # max_seq_len outright, but already once the bucketed room drops under
-    # MIN_SUFFIX_FRAMES (12) -- 100 tokens pad to 128, which equals max_seq_len itself,
-    # leaving a bucketed room of -1 (well under 12), so this must fall back to the exact
-    # length (100) instead: 128 - 100 - 1 = 27.
-    runtime = FakeRuntime(config=FakeStreamingConfig(max_seq_len=128, fast_backbone_prefill=True))
-
-    assert runtime.max_new_tokens_room(1500, _room_inputs(100)) == 27
-
-
-def test_context_room_is_monotonic_across_the_bucket_fallback_boundary() -> None:
-    # The real _prefill_plan's own promise: once bucketing is abandoned for a prompt,
-    # every longer prompt stays on the exact-length (eager) path too, so room never goes
-    # back up as the prompt grows -- checked here across a range that crosses the
-    # boundary between "bucketed room still >= MIN_SUFFIX_FRAMES" (seq 90-96) and
-    # "falls back to exact" (seq 97 on).
-    runtime = FakeRuntime(config=FakeStreamingConfig(max_seq_len=128, fast_backbone_prefill=True))
-
-    rooms = [
-        runtime.max_new_tokens_room(1500, _room_inputs(seq_len)) for seq_len in range(80, 117)
-    ]
-
-    assert rooms == sorted(rooms, reverse=True)  # non-increasing throughout
-    assert rooms != sorted(rooms)  # sanity: not trivially constant either
+    assert runtime.max_new_tokens_room(1500, _room_inputs(100)) == 256 - 100 - 1
+    assert runtime.max_new_tokens_room(1500, _room_inputs(100), prefix_len=50) == 256 - 150 - 1
 
 
 def test_iter_audio_chunks_raises_like_the_real_runtime_when_there_is_no_room() -> None:

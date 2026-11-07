@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +17,7 @@ import torch
 # single-file safetensors name first, then the sharded safetensors index, and only
 # then (never for this codebase, since nothing here passes `use_safetensors=False`)
 # a bare or sharded PyTorch `.bin`. `Qwen3TTSTokenizerV2Model.from_pretrained` (what
-# `breeze_infer/runtime.py` calls to load the bundled audio tokenizer) uses this same
+# upstream's PyTorch code calls to load the bundled audio tokenizer) uses this same
 # resolution, so this is the one/few file(s) that actually determine what the loaded
 # codec's weights are -- not every `*.safetensors` file that happens to sit in the
 # directory (review #1/#5, prior round).
@@ -31,29 +29,6 @@ _PYTORCH_INDEX_FILE = "pytorch_model.bin.index.json"
 _MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024  # 100 MB; a real header is a few KB.
 
 
-@contextlib.contextmanager
-def _deterministic_cudnn_encode() -> Iterator[None]:
-    """Force ``benchmark=False, deterministic=True`` for exactly the encode call
-    below, restoring both on the way out -- including when the encode raises.
-
-    Not ``torch.backends.cudnn.flags()``: that context manager resets every flag
-    you don't pass to *its own* default (``allow_tf32=True``, ``benchmark_limit=10``,
-    ``fp32_precision="none"``), not to the caller's actual value, so a caller running
-    with e.g. ``allow_tf32=False`` would get TF32 turned back on for the duration of
-    the encode (review finding 1). Saving and restoring exactly the two flags this
-    fix cares about leaves everything else alone.
-    """
-    saved_benchmark = torch.backends.cudnn.benchmark
-    saved_deterministic = torch.backends.cudnn.deterministic
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    try:
-        yield
-    finally:
-        torch.backends.cudnn.benchmark = saved_benchmark
-        torch.backends.cudnn.deterministic = saved_deterministic
-
-
 def encode_prompt_waveform(
     audio_tokenizer: Any, wav: np.ndarray, sample_rate: int
 ) -> torch.Tensor:
@@ -61,12 +36,7 @@ def encode_prompt_waveform(
     wav = np.asarray(wav, dtype=np.float32)
     if wav.ndim > 1:
         wav = np.mean(wav, axis=1)
-    # `--fast-all` turns cudnn.benchmark on process-wide, so each server process can autotune
-    # a different conv algorithm; they round differently and flip about 1% of the fine codes,
-    # changing the audio for the same reference after a restart (research.md R18). Only the
-    # encode is pinned; decode keeps its tuned algorithms.
-    with _deterministic_cudnn_encode():
-        encoded = audio_tokenizer.encode(wav, sr=int(sample_rate))
+    encoded = audio_tokenizer.encode(wav, sr=int(sample_rate))
     codes = torch.as_tensor(encoded["audio_codes"][0], dtype=torch.int16)
     if codes.ndim != 2:
         raise ValueError(f"Expected 2D audio codes, got shape {tuple(codes.shape)}")
@@ -103,7 +73,7 @@ def pcm16(audio: np.ndarray) -> bytes:
 # in the fingerprint.
 #
 # Read from ``<audio_tokenizer_dir>/config.json``, the ``Qwen3TTSTokenizerV2Config``
-# the bundled qwen-tts tokenizer loads (``breeze_infer/runtime.py``), verified against
+# the bundled qwen-tts tokenizer loads (and mlx-audio's port of it), verified against
 # the real bundled checkpoint's own file
 # (``<model>/audio_tokenizer/config.json``):
 #   - top level: ``input_sample_rate``, ``output_sample_rate`` (24000/24000),
@@ -358,8 +328,7 @@ def codec_fingerprint(audio_tokenizer_dir: str | Path) -> str:
     ``tests/test_audio.py``).
 
     Directory-only, not path plus caller-supplied facts: the caller already has this
-    same directory (it's the one ``breeze_infer/runtime.py`` loads the audio
-    tokenizer from), so a directory is no more information to thread through than
+    same directory (it's the one the runtime loads the audio tokenizer from), so a directory is no more information to thread through than
     the codec facts were, and it keeps the ``qwen_tts`` config/weights-loading
     conventions (the nested config blocks, the single-file-vs-sharded resolution)
     known in exactly one place instead of duplicated at every call site.

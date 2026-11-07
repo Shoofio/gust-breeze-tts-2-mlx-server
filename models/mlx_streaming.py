@@ -5,7 +5,12 @@
 templates, synthesis and voice code run unchanged on a Mac.
 
 mlx exists only on macOS arm64, and this module must still import everywhere (the room tests
-run on Linux CI), so every `mlx` and `mlx_audio` import is inside the function that needs it.
+run without mlx), so every `mlx` and `mlx_audio` import is inside the function that needs it.
+
+"CUDA" in the comments below means BreezeBlue's PyTorch implementation as it ran on NVIDIA GPUs
+(upstream breezeblue-ai/breeze-tts, and this server's CUDA backend before it became Mac-only):
+this runtime was built to match its sampling, CFG, room and guard rules step for step. That code
+is no longer in this repository; the names cited are upstream's.
 """
 
 from __future__ import annotations
@@ -25,39 +30,36 @@ from breeze_infer.limits import MAX_NEW_TOKENS_CEILING
 from breeze_infer.reference_audio import predicted_frames
 from breeze_infer.templates import get_template, prepare_inputs
 
-from .cudagraph.sampling import (
+from .runtime_seam import (
     _NONFINITE_MESSAGE,
-    MIN_TEMPERATURE,
-    NonFiniteLogitsError,
-    require_number,
-)
-from .fast_streaming import (
     _POSITIVE_INTEGER_RULE,
     MIN_SUFFIX_FRAMES,
+    MIN_TEMPERATURE,
     FastStreamingChunk,
     FastStreamingConfig,
+    NonFiniteLogitsError,
     NoRoomError,
     PromptLength,
     _require_valid_overrides,
     max_reference_prefix_len,
     prompt_length,
+    require_number,
     select_fast_cfg,
 )
 
-# `warmup()`'s requests: a short text with CUDA's warmup instruction (configs/fast.json), long
-# enough to run every kernel of the prefill, the frame loop and the codec.
+# `warmup()`'s requests: a short text with CUDA's warmup instruction, long enough to run every
+# kernel of the prefill, the frame loop and the codec.
 _WARMUP_TEXT = "Warm up."
 _WARMUP_INSTRUCTION = "Speak naturally and clearly."
 _WARMUP_FRAMES = 12
 
-# The backbone's context length. The CUDA runtime is launched with the same value, and request
-# validation must match it (contracts/runtime-seam.md, `config.max_seq_len`).
+# The backbone's context length (BC-47). Request validation must match it
+# (contracts/runtime-seam.md, `config.max_seq_len`).
 MAX_SEQ_LEN = 2048
 
 
 class Sampling(NamedTuple):
-    """One sampler's settings, with the fields `FastBreezeStreamingRuntime._sampling_params`
-    returns (models/fast_streaming.py:415)."""
+    """One sampler's settings, with the fields CUDA's `_sampling_params` returns."""
 
     temperature: float
     top_k: int
@@ -343,7 +345,7 @@ def _sample(logits: Any, key: Any, sampling: Sampling) -> tuple[Any, Any]:
     """One token per row of float32 `logits`, on the GPU, and whether each row could be sampled.
 
     The same steps, in the same order, as CUDA's `_sample_logits_or_sentinel` and `_draw`
-    (models/cudagraph/sampling.py): temperature (floored at `MIN_TEMPERATURE`), top-k, then
+    (upstream's `models/cudagraph/sampling.py`): temperature (floored at `MIN_TEMPERATURE`), top-k, then
     top-p with Hugging Face's shift, then a draw; `do_sample=False` is argmax.
 
     The second result is CUDA's guard, on the same values: after the temperature for a sampled
@@ -381,7 +383,7 @@ class _BackboneCache:
     The rows (the prompt, and under CFG the negative prompt) can differ in length. Each row is
     padded to the longest, the pad slots are masked out, and each row keeps its own RoPE
     position: the same attention as CUDA's left-padded batch with
-    `position_ids = attention_mask.cumsum(-1) - 1` (fast_streaming.py `_run_prefill`).
+    `position_ids = attention_mask.cumsum(-1) - 1` (CUDA's `_run_prefill`).
 
     A row's slots are `[reference prefix | pad | its own prompt | frames]`. Without a prefix
     the pad comes first (left padding). With one, every row shares the prefix in slots
@@ -743,9 +745,7 @@ class MlxBreezeStreamingRuntime:
     # The KV cache is bf16 at both precisions (mxfp8 quantizes weights, not activations), so
     # the voice prefix cache's byte estimate is the same as on CUDA.
     dtype = torch.bfloat16
-    # MLX warms up through its own branch in model loading, not the CUDA graph warmup.
-    fast_enabled = False
-    # Frames per yielded chunk, as on the CUDA path without --fast-codec (research R6).
+    # Frames per yielded chunk, as on CUDA without its fast codec (research R6).
     codec_chunk_frames = 2
 
     def __init__(
@@ -1048,10 +1048,9 @@ class MlxBreezeStreamingRuntime:
 
 
 def _sampling(generation_config: Any) -> Sampling:
-    """A sampler's settings from a `GenerationConfig`, with the fallbacks of
-    `FastBreezeStreamingRuntime._sampling_params` (models/fast_streaming.py:415-427). The
-    server's `FastStreamingConfig` sets no sampling overrides (`model_loading.streaming_config`),
-    so the config's values decide."""
+    """A sampler's settings from a `GenerationConfig`, with the fallbacks of CUDA's
+    `_sampling_params`. The runtime's `FastStreamingConfig` sets no sampling overrides, so the
+    config's values decide."""
 
     def value(name: str, default: Any) -> Any:
         found = getattr(generation_config, name, default)
@@ -1068,13 +1067,11 @@ def _sampling(generation_config: Any) -> Sampling:
 def _load_generation_configs(path: Path) -> tuple[Any, Any]:
     """The backbone's and the depth decoder's `GenerationConfig`, sourced as on CUDA.
 
-    On CUDA the model's `generation_config` comes from the checkpoint's
-    `generation_config.json`, the depth decoder's starts from transformers' defaults, and
-    `model_loading.load_model` then applies `update_generation_config_for_breeze`
-    (breeze_infer/model_loading.py:111, breeze_infer/runtime.py:45-70). That call's built-in
-    values override the file for every sampling setting of both, and for the backbone's
-    `max_new_tokens`. The same function is applied here to the same starting configs, so the
-    two backends cannot drift apart.
+    The model's `generation_config` comes from the checkpoint's `generation_config.json`, the
+    depth decoder's starts from transformers' defaults, and then
+    `update_generation_config_for_breeze` (breeze_infer/runtime.py) applies upstream's
+    defaults. Its built-in values override the file for every sampling setting of both, and for
+    the backbone's `max_new_tokens`.
     """
     from transformers import GenerationConfig
 
@@ -1140,7 +1137,7 @@ def load_mlx_runtime(path: Path, speed: MlxSpeedOptions | None = None) -> MlxBre
     # AutoTokenizer loads the MLX checkpoint directly with transformers 4.57.3, which this
     # backend pins (research R2): `tokenizer_config.json` names `GemmaTokenizerFast`, so the
     # unknown `breeze_tts` model type never comes into it. The files are the official ones
-    # (research R3), loaded the way `breeze_infer.runtime` loads them on CUDA. mlx-audio's own
+    # (research R3), loaded the way upstream loads them on CUDA. mlx-audio's own
     # `mlx_model.tokenizer` is not used.
     tokenizer = AutoTokenizer.from_pretrained(path, fix_mistral_regex=False)
     config = json.loads((path / "config.json").read_text(encoding="utf-8"))

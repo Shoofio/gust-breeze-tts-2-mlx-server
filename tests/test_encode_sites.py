@@ -1,12 +1,11 @@
 """Guard against a new direct call to the audio codec/tokenizer's ``.encode(...)``
-outside ``breeze_infer/audio.py`` (research.md R18).
+outside ``breeze_infer/audio.py``.
 
-Every reference-audio encode in the live serving path must go through
-``encode_prompt_waveform``, the only place that scopes cuDNN to
-``benchmark=False, deterministic=True`` for the call. A stray direct call anywhere
-else in production code would silently reintroduce the cross-process code drift R18
-fixed (the same reference wav encoding to different codec codes depending on which
-server process handled the request).
+Every reference-audio encode in the serving path goes through ``encode_prompt_waveform``,
+the one place that downmixes the waveform and checks and normalizes the codes it returns
+(``int16[frames, codebooks]``, on the CPU). It was introduced to pin cuDNN for the encode on
+the CUDA backend (research.md R18); the single entry point is kept so a new call site can't
+skip those checks.
 """
 
 from __future__ import annotations
@@ -17,22 +16,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _AUDIO_PY = REPO_ROOT / "breeze_infer" / "audio.py"
 
-# The real call shapes in this codebase (checked by hand, not guessed): `encoded =
-# audio_tokenizer.encode(wav, sr=...)` in breeze_infer/audio.py, and
-# `self.codec_model.encode(audio_batch...)` in models/breeze.py. Matching on the
-# receiver containing "tokenizer" or "codec_model" -- not a bare `.encode(` regex --
-# so this doesn't flag the many unrelated `str.encode("utf-8")`/`.encode("ascii")`
-# calls elsewhere (breeze_infer/cors.py, version_header.py, compile_cache.py, ...).
+# The real call shape (checked by hand, not guessed): `encoded =
+# audio_tokenizer.encode(wav, sr=...)` in breeze_infer/audio.py. Matching on the receiver
+# containing "tokenizer" or "codec_model" -- not a bare `.encode(` regex -- so this doesn't
+# flag the many unrelated `str.encode("utf-8")`/`.encode("ascii")` calls elsewhere
+# (breeze_infer/cors.py, version_header.py, ...). `MlxAudioTokenizer.encode` in
+# models/mlx_streaming.py is the tokenizer itself (its `self._codec.encode` is the codec
+# underneath), not a call site.
 _RECEIVER_MARKERS = ("tokenizer", "codec_model")
-
-# models/breeze.py's `_get_audio_token_from_batch` calls `self.codec_model.encode(...)`
-# directly, but research.md R18 documents it as unused upstream training-script code
-# ported from the base model, with no caller anywhere in this repo -- not part of the
-# inference server -- so it is exempted here rather than routed through
-# encode_prompt_waveform.
-_EXEMPT_FUNCTIONS = {
-    (REPO_ROOT / "models" / "breeze.py", "_get_audio_token_from_batch"),
-}
 
 
 class _EncodeCallFinder(ast.NodeVisitor):
@@ -62,8 +53,7 @@ class _EncodeCallFinder(ast.NodeVisitor):
 
 
 def _production_python_files() -> list[Path]:
-    files = [REPO_ROOT / "infer.py"]
-    files += sorted((REPO_ROOT / "breeze_infer").rglob("*.py"))
+    files = sorted((REPO_ROOT / "breeze_infer").rglob("*.py"))
     files += sorted((REPO_ROOT / "models").rglob("*.py"))
     return files
 
@@ -79,8 +69,6 @@ def _find_offending_calls(path: Path, source: str) -> list[str]:
 
     offenders = []
     for func_name, lineno in finder.hits:
-        if (path, func_name) in _EXEMPT_FUNCTIONS:
-            continue
         offenders.append(f"{path}:{lineno} (in {func_name or '<module>'})")
     return offenders
 
@@ -88,9 +76,9 @@ def _find_offending_calls(path: Path, source: str) -> list[str]:
 def test_detects_a_direct_codec_encode_call_outside_audio_py() -> None:
     """Proves the detector itself works, independent of this repo's current (clean)
     state: a direct `self.codec_model.encode(...)` call in a file that isn't
-    breeze_infer/audio.py and isn't the exempted function must be reported.
+    breeze_infer/audio.py must be reported.
     """
-    decoy_path = REPO_ROOT / "models" / "not_the_exempt_function.py"
+    decoy_path = REPO_ROOT / "models" / "decoy.py"
     source = (
         "class Thing:\n"
         "    def some_other_method(self, batch):\n"
@@ -100,21 +88,6 @@ def test_detects_a_direct_codec_encode_call_outside_audio_py() -> None:
     offenders = _find_offending_calls(decoy_path, source)
 
     assert offenders == [f"{decoy_path}:3 (in some_other_method)"]
-
-
-def test_the_exempted_dead_code_function_is_not_flagged() -> None:
-    """models/breeze.py's real `_get_audio_token_from_batch` must stay exempt -- this
-    pins the exemption to that exact function name so a rename silently re-flags it
-    instead of silently staying exempt.
-    """
-    path = REPO_ROOT / "models" / "breeze.py"
-    source = (
-        "class Model:\n"
-        "    def _get_audio_token_from_batch(self, audio_batch):\n"
-        "        return self.codec_model.encode(audio_batch.unsqueeze(0))\n"
-    )
-
-    assert _find_offending_calls(path, source) == []
 
 
 def test_only_audio_py_calls_the_codec_encode_directly() -> None:
@@ -129,5 +102,5 @@ def test_only_audio_py_calls_the_codec_encode_directly() -> None:
         "breeze_infer/audio.py: "
         + "; ".join(offenders)
         + " -- route reference-audio encoding through "
-        "breeze_infer.audio.encode_prompt_waveform instead (research.md R18)."
+        "breeze_infer.audio.encode_prompt_waveform instead."
     )

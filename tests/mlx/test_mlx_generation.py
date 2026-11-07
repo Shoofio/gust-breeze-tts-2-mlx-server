@@ -11,7 +11,7 @@ import torch
 
 from breeze_infer.http_fields import DEFAULT_INSTRUCTION
 from breeze_infer.synthesis import NoRef, prepare_piece
-from models.cudagraph.sampling import NonFiniteLogitsError
+from models.runtime_seam import NonFiniteLogitsError
 
 pytestmark = pytest.mark.mlx
 

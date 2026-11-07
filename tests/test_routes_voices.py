@@ -21,7 +21,7 @@ import json
 import threading
 import urllib.parse
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,12 +47,13 @@ from breeze_infer.settings import settings_from_args
 from breeze_infer.templates import prepare_prefix_inputs
 from breeze_infer.voice_prefix import VoicePrefixCache
 from breeze_infer.voice_registry import NameTaken, VoiceRegistry, unnamed_id
-from models.fast_streaming import MIN_SUFFIX_ROOM
+from models.runtime_seam import MIN_SUFFIX_ROOM
 from tests.fakes import (
     CODEC_CODEBOOK_SIZE,
     CODEC_CODEBOOKS,
     CODEC_SAMPLE_RATE,
     CODEC_SAMPLES_PER_FRAME,
+    MLX_CHECKPOINT_DIR,
     FakeCodec,
     FakeRuntime,
     FakeStreamingConfig,
@@ -64,7 +65,7 @@ from tests.fakes import (
 )
 
 VOICES = "/v1/voices"
-MODEL_DIR = str(Path(__file__).parent)  # never opened: the model load is faked
+MODEL_DIR = str(MLX_CHECKPOINT_DIR)  # never opened: the model load is faked
 FINGERPRINT = "f" * 64
 RECORD_KEYS = {"id", "frames", "seconds", "encode_ms", "saved", "ref_text"}
 # One encode, as the injected clock times it: 812.3 ms, reported as the integer 812.
@@ -149,7 +150,7 @@ class _Server:
                 voices_dir=voices_dir,
                 events=self.events,
                 codec_fingerprint=FINGERPRINT,
-                now=lambda: datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc),
+                now=lambda: datetime(2026, 9, 26, 12, 0, tzinfo=UTC),
                 nonce=lambda: f"n{next(nonces)}",
             ),
         )
@@ -875,7 +876,7 @@ def test_the_scan_runs_after_the_load_on_a_worker_thread_and_before_ready(tmp_pa
             voices_dir=tmp_path,
             events=events,
             codec_fingerprint=FINGERPRINT,
-            now=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 9, 26, tzinfo=UTC),
             nonce=lambda: "n",
         )
 
@@ -997,7 +998,7 @@ def test_open_voices_loads_saved_voices_and_reserves_skipped_names(tmp_path: Pat
         voices_dir=tmp_path,
         events=events,
         codec_fingerprint=FINGERPRINT,
-        now=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 9, 26, tzinfo=UTC),
         nonce=lambda: "n",
     )
 
@@ -1023,7 +1024,7 @@ def test_a_voice_file_from_another_codec_is_skipped(tmp_path: Path) -> None:
         voices_dir=tmp_path,
         events=events,
         codec_fingerprint="0" * 64,
-        now=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 9, 26, tzinfo=UTC),
         nonce=lambda: "n",
     )
 
@@ -1635,7 +1636,7 @@ def test_43_6_a_voice_whose_prefix_cannot_be_measured_is_skipped_and_its_name_re
         voices_dir=tmp_path,
         events=events,
         codec_fingerprint=FINGERPRINT,
-        now=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 9, 26, tzinfo=UTC),
         nonce=lambda: "n",
     )
 

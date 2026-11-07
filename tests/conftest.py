@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
-GPU_ENV = "BREEZE_MODEL"
 MLX_ENV = "BREEZE_MLX_MODEL"
+# The official PyTorch checkpoint (BreezeBlue/Breeze-TTS-2), optional: only its tokenizer files
+# are read, to compare with the MLX checkpoint's.
+OFFICIAL_ENV = "BREEZE_OFFICIAL_MODEL"
 
 
 def _mlx_skip_reason() -> str | None:
@@ -27,23 +29,6 @@ def pytest_collection_modifyitems(config, items) -> None:
         for item in items:
             if "mlx" in item.keywords:
                 item.add_marker(mlx_skip)
-    if os.environ.get(GPU_ENV):
-        return
-    skip = pytest.mark.skip(reason=f"set {GPU_ENV}=/path/to/checkpoint to run gpu tests")
-    for item in items:
-        if "gpu" in item.keywords:
-            item.add_marker(skip)
-
-
-@pytest.fixture(scope="session")
-def breeze_model() -> Path:
-    value = os.environ.get(GPU_ENV)
-    if not value:
-        pytest.skip(f"{GPU_ENV} is not set")
-    path = Path(value)
-    if not path.is_dir():
-        pytest.skip(f"{GPU_ENV}={value} is not a directory")
-    return path
 
 
 @pytest.fixture(scope="session")
@@ -59,7 +44,7 @@ def mlx_model() -> Path:
 
 @pytest.fixture(scope="session")
 def official_model() -> Path | None:
-    # The official PyTorch checkpoint is optional: tests that compare against it
-    # (token parity) skip themselves when this is None.
-    value = os.environ.get(GPU_ENV)
+    # Tests that compare against the official checkpoint (tokenizer parity) skip themselves when
+    # this is None.
+    value = os.environ.get(OFFICIAL_ENV)
     return Path(value) if value else None

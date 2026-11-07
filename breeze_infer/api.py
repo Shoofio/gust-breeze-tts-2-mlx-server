@@ -20,14 +20,13 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-import torch
 import uvicorn
 from fastapi import FastAPI
 from starlette.types import ASGIApp
@@ -53,7 +52,6 @@ from breeze_infer.request_id import RequestIdMiddleware
 from breeze_infer.routes_health import Readiness, install_health
 from breeze_infer.routes_speech import CpuTokenizer, install_speech
 from breeze_infer.routes_voices import VoiceServices, VoiceSlot, install_voices
-from breeze_infer.runtime import get_dist_info
 from breeze_infer.settings import Platform, Settings, settings_from_args
 from breeze_infer.streaming import ClientAbortLogFilter
 from breeze_infer.synthesis import measure_voice_prefix
@@ -420,7 +418,7 @@ def _open_checkpoint_voices(
     loaded: LoadedModel, prefix_cache: VoicePrefixCache, *, settings: Settings, events: Emitter
 ) -> VoiceServices:
     """`open_voices` for the served checkpoint, with the real clock and nonces. The codec is
-    fingerprinted from the same `audio_tokenizer` directory `runtime.load_runtime` loads it
+    fingerprinted from the same `audio_tokenizer` directory the MLX loader reads it
     from."""
     return open_voices(
         loaded,
@@ -428,7 +426,7 @@ def _open_checkpoint_voices(
         voices_dir=settings.voices_dir,
         events=events,
         codec_fingerprint=audio.codec_fingerprint(settings.model_path / "audio_tokenizer"),
-        now=lambda: datetime.now(timezone.utc),
+        now=lambda: datetime.now(UTC),
         nonce=lambda: os.urandom(8).hex(),
     )
 
@@ -797,16 +795,6 @@ async def _drain_gpu(components: Components, server: uvicorn.Server) -> bool:
     return await asyncio.to_thread(components.gpu.shutdown, remaining)
 
 
-def _cuda_device(environ: Mapping[str, str]) -> str:
-    """The device for this process: `cuda:<local rank>` by `runtime.get_dist_info`'s rule, or
-    `cpu` without CUDA.
-    """
-    if not torch.cuda.is_available():
-        return "cpu"
-    _, _, local_rank = get_dist_info(environ)
-    return f"cuda:{local_rank}"
-
-
 def _gpu_unresponsive(events: Emitter, readiness: Readiness) -> None:
     """The GPU gate was poisoned: a `gen.close()` ran past `GPU_CLOSE_TIMEOUT_SECONDS`. Report
     it, and fail `/health` so a supervisor restarts the process; nothing else recovers it."""
@@ -828,21 +816,12 @@ def _hard_exit(exit_code: int) -> None:
     os._exit(exit_code)
 
 
+# The GPU thread's device name, reported in `model.loaded`.
+MLX_DEVICE = "mlx:gpu"
+
+
 def _select_no_device(_: str) -> None:
-    """`set_device` stand-in without CUDA; the load then fails with a clear runtime error."""
-
-
-def choose_device(
-    settings: Settings, environ: Mapping[str, str]
-) -> tuple[str, Callable[[str], None]]:
-    """The device name for the GPU thread, and the `set_device` that selects it.
-
-    MLX has one GPU and no per-thread device to select, so it gets the no-op.
-    """
-    if settings.backend == "mlx":
-        return "mlx:gpu", _select_no_device
-    device = _cuda_device(environ)
-    return device, torch.cuda.set_device if device.startswith("cuda") else _select_no_device
+    """The GPU thread's `set_device`: MLX has one GPU and no per-thread device to select."""
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -867,23 +846,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     ws_sockets = bind_ws_sockets(settings, events)
     ws_port = bound_port(ws_sockets)
 
-    # The one read of the process environment (Constitution III): the device choice, and the
-    # mapping the compile-cache setup exports TORCHINDUCTOR_CACHE_DIR into.
+    # The one read of the process environment (Constitution III): the MLX speed settings
+    # (`BREEZE_MLX_*`) the model load reads.
     environ = os.environ
-    device, set_device = choose_device(settings, environ)
     readiness = Readiness()
     components = Components(
         settings=settings,
         events=events,
         gate=GpuGate(on_poisoned=partial(_gpu_unresponsive, events, readiness)),
-        gpu=GpuThread(device, set_device, partial(report_close_failed, events)),
+        gpu=GpuThread(MLX_DEVICE, _select_no_device, partial(report_close_failed, events)),
         readiness=readiness,
         ws_port=lambda: ws_port,
         cpu_tokenizer=CpuTokenizer(),
         open_voices=partial(_open_checkpoint_voices, settings=settings, events=events),
     )
     app = create_app(components)
-    load = partial(load_model, settings, device, environ)
+    load = partial(load_model, settings, MLX_DEVICE, environ)
     outcome = ServeOutcome()
     with asyncio.Runner() as runner:
         try:

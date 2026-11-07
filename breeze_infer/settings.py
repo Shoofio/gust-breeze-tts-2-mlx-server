@@ -2,8 +2,7 @@
 
 Per data-model.md "Settings", this is built once at the composition root from
 the command line. It never reads ``os.environ`` (Principle III: environment
-resolution, such as ``$TORCHINDUCTOR_CACHE_DIR``, belongs to the composition
-root that consumes ``compile_cache_dir``, not to argument parsing).
+resolution belongs to the composition root, not to argument parsing).
 """
 
 from __future__ import annotations
@@ -27,19 +26,20 @@ DEFAULT_SPLIT_CHARS = 600
 DEFAULT_CHUNK_FIRST = 1
 DEFAULT_CHUNK_MAX = 25
 DEFAULT_VOICES_DIR = Path("voices")
-DEFAULT_ATTN_IMPLEMENTATION = "eager"
 
 # The smallest Apple Silicon Mac with room for the bf16 weights, the codec and the KV cache
 # (research R5).
 MLX_MIN_MEMORY_BYTES = 16 * 1024**3
 
-# Where to get each backend's weights; named in the checkpoint/backend mismatch refusals.
-# The MLX command names the 8-bit repo because 8-bit is the Mac default (spec FR-012).
-MLX_DOWNLOAD_COMMAND = (
-    "uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx-8bit "
-    "--revision c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
+# Named in the refusal of a checkpoint that isn't MLX. The launcher holds the repository ids and
+# revisions, in one place, and prints the download command when a snapshot is missing.
+MLX_WEIGHTS_HINT = "scripts/start_breeze_mac.sh names the download command for each precision"
+
+# The refusal of --backend cuda, which earlier versions of this server had.
+CUDA_REMOVED = (
+    "--backend cuda was removed: this server runs on Apple Silicon (MLX) only. For NVIDIA GPUs, "
+    "see northcraftfoundries/breeze-tts2-fast-streaming-api or breezeblue-ai/breeze-tts"
 )
-PYTORCH_DOWNLOAD_COMMAND = "uvx --from huggingface_hub hf download BreezeBlue/Breeze-TTS-2"
 
 _PYTORCH_MODEL_TYPE = "breeze"
 _MLX_MODEL_TYPE = "breeze_tts"
@@ -51,7 +51,7 @@ _WS_PORT_UNSET = object()
 
 @dataclass(frozen=True)
 class Platform:
-    """The machine facts the backend choice depends on, read once at the entry point.
+    """The machine facts the startup checks depend on, read once at the entry point.
 
     Passed into ``settings_from_args`` rather than read there, so the parser stays a pure
     function of its arguments and tests build a ``Platform`` directly instead of patching.
@@ -63,8 +63,8 @@ class Platform:
 
     @classmethod
     def detect(cls) -> Platform:
-        # Memory only matters for the MLX backend, which only runs on macOS. os.sysconf doesn't
-        # exist on Windows, and every launch calls this, so elsewhere memory is left at 0.
+        # The memory check only applies on macOS; elsewhere the Apple Silicon check refuses the
+        # launch first, so memory is left at 0.
         memory_bytes = 0
         if sys.platform == "darwin":
             memory_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
@@ -147,15 +147,6 @@ class Settings:
     chunk_first: int
     chunk_max: int
     voices_dir: Path
-    fast_all: bool | None
-    fast_text_encoder: bool
-    fast_backbone_prefill: bool
-    fast_backbone_decode: bool
-    fast_depth_decoder: bool
-    fast_codec: bool
-    attn_implementation: str
-    compile_cache_dir: Path | None
-    backend: Literal["cuda", "mlx"]
     weights: Literal["bf16", "8bit", "mixed"]
 
 
@@ -166,31 +157,6 @@ class Settings:
 # separately. An explicit [0-9] class (rather than \d with re.ASCII) keeps
 # that ASCII-only intent visible at the call site.
 _STRICT_PORT_RE = re.compile(r"[0-9]+")
-
-
-class _CudaOnlyBoolean(argparse.BooleanOptionalAction):
-    """A ``--x/--no-x`` flag that records it was given, for the MLX backend's refusal.
-
-    Recording the option string (rather than comparing against the default) keeps argv order
-    for the message and also catches ``--no-x``, which leaves the default value unchanged.
-    """
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        _note_cuda_only(namespace, option_string)
-        super().__call__(parser, namespace, values, option_string)
-
-
-class _CudaOnlyStore(argparse.Action):
-    """A store action that records it was given; see ``_CudaOnlyBoolean``."""
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        _note_cuda_only(namespace, option_string)
-        setattr(namespace, self.dest, values)
-
-
-def _note_cuda_only(namespace: argparse.Namespace, option_string: str | None) -> None:
-    given = getattr(namespace, "cuda_only_given", ())
-    namespace.cuda_only_given = (*given, option_string)
 
 
 def _parse_port(value: str) -> int:
@@ -255,8 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         choices=("cuda", "mlx"),
-        default=None,
-        help="Inference backend (default: mlx on macOS, else cuda)",
+        default="mlx",
+        help="Accepted for compatibility: mlx is the only backend",
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Bind address for HTTP and WebSocket (default: {DEFAULT_HOST})")
     parser.add_argument(
@@ -318,48 +284,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_VOICES_DIR,
         help=f"Directory holding saved voices (default: ./{DEFAULT_VOICES_DIR})",
     )
-    parser.add_argument(
-        "--fast-all", action=_CudaOnlyBoolean, default=None
-    )
-    parser.add_argument(
-        "--fast-text-encoder", action=_CudaOnlyBoolean, default=False
-    )
-    parser.add_argument(
-        "--fast-backbone-prefill", action=_CudaOnlyBoolean, default=False
-    )
-    parser.add_argument(
-        "--fast-backbone-decode", action=_CudaOnlyBoolean, default=False
-    )
-    parser.add_argument(
-        "--fast-depth-decoder", action=_CudaOnlyBoolean, default=False
-    )
-    parser.add_argument(
-        "--fast-codec", action=_CudaOnlyBoolean, default=False
-    )
-    parser.add_argument(
-        "--attn-implementation",
-        action=_CudaOnlyStore,
-        # flash_attention_2 is deliberately absent: Hugging Face's FA2 path
-        # rejects the backbone's 4D attention masks ("cu_seqlens_k must have
-        # shape (batch_size + 1)") in both eager and CUDA-graph modes.
-        choices=("eager", "sdpa"),
-        default=DEFAULT_ATTN_IMPLEMENTATION,
-        help=(
-            "Attention kernel for the backbone and text encoder; the fast "
-            "text-encoder stage always runs sdpa for graph capture regardless "
-            f"of this setting (default: {DEFAULT_ATTN_IMPLEMENTATION})"
-        ),
-    )
-    parser.add_argument(
-        "--compile-cache-dir",
-        action=_CudaOnlyStore,
-        type=Path,
-        default=None,
-        help=(
-            "Where torch.compile artifacts persist between starts "
-            "(default: $TORCHINDUCTOR_CACHE_DIR if set, else ./.cache/torchinductor)"
-        ),
-    )
     return parser
 
 
@@ -372,59 +296,36 @@ def _read_config(model_path: Path) -> dict[str, Any] | None:
     return config if isinstance(config, dict) else None
 
 
-def _choose_backend(
+def _check_platform(
     parser: argparse.ArgumentParser, args: argparse.Namespace, platform: Platform | None
-) -> Literal["cuda", "mlx"]:
-    """The backend to run, refusing what this machine can't serve (FR-002, FR-003, FR-004).
+) -> None:
+    """Refuse a machine the MLX backend can't serve (FR-002, FR-003, FR-004).
 
-    ``platform`` is ``None`` for callers that never read the machine (every existing test),
-    which means "not a Mac": the default is cuda, as before this option existed.
+    ``platform`` is ``None`` for callers that only parse arguments (the model-free tests); the
+    entry point passes ``Platform.detect()``, so the machine is always checked at launch.
     """
-    # Any Mac defaults to mlx, so an Intel Mac is told it needs Apple Silicon rather than
-    # being sent to a CUDA backend that macOS can't run either.
-    on_macos = platform is not None and platform.is_macos
-    backend = args.backend or ("mlx" if on_macos else "cuda")
-
-    if backend == "cuda":
-        if on_macos:
-            parser.error("--backend cuda is not available on macOS; use --backend mlx (the default here)")
-        return "cuda"
-
-    if platform is None or not platform.is_apple_silicon:
-        machine = "unknown" if platform is None else f"{platform.system} {platform.machine}"
-        parser.error(f"--backend mlx needs an Apple Silicon Mac (this machine: {machine})")
+    if args.backend == "cuda":
+        parser.error(CUDA_REMOVED)
+    if platform is None:
+        return
+    if not platform.is_apple_silicon:
+        parser.error(
+            f"the server needs an Apple Silicon Mac (this machine: {platform.system} {platform.machine})"
+        )
     if platform.memory_bytes < MLX_MIN_MEMORY_BYTES:
         gigabytes = round(platform.memory_bytes / 1024**3, 1)
-        parser.error(f"--backend mlx needs at least 16 GB of memory (this machine: {gigabytes:g} GB)")
-    cuda_only = tuple(dict.fromkeys(getattr(args, "cuda_only_given", ())))
-    if cuda_only:
-        parser.error(f"{', '.join(cuda_only)} only apply to --backend cuda; remove them")
-    return "mlx"
+        parser.error(f"the server needs at least 16 GB of memory (this machine: {gigabytes:g} GB)")
 
 
 def _check_checkpoint(
-    parser: argparse.ArgumentParser,
-    model_path: Path,
-    backend: Literal["cuda", "mlx"],
+    parser: argparse.ArgumentParser, model_path: Path
 ) -> Literal["bf16", "8bit", "mixed"]:
-    """Refuse a checkpoint that doesn't match the backend; return its weight precision.
-
-    The CUDA path stays as lenient as it was before this check existed: a missing or odd
-    ``config.json`` is not its concern, and only a checkpoint that says it is MLX is refused.
-    The MLX backend reads the precision from the file, so there it must exist.
-    """
+    """Refuse a checkpoint that isn't MLX; return its weight precision, read from the file."""
     config = _read_config(model_path)
-    if backend == "cuda":
-        if config is not None and config.get("model_type") == _MLX_MODEL_TYPE:
-            parser.error(
-                f"{model_path} holds MLX weights; --backend cuda needs: {PYTORCH_DOWNLOAD_COMMAND}"
-            )
-        return "bf16"
-
     if config is None:
         parser.error(
-            f"{model_path} has no readable config.json; --backend mlx needs the MLX weights: "
-            f"{MLX_DOWNLOAD_COMMAND}"
+            f"{model_path} has no readable config.json; the server needs MLX weights "
+            f"({MLX_WEIGHTS_HINT})"
         )
     try:
         kind = checkpoint_kind(config, model_path)
@@ -432,8 +333,8 @@ def _check_checkpoint(
         parser.error(str(exc))
     if kind.format == "pytorch":
         parser.error(
-            f"{model_path} is the PyTorch checkpoint; --backend mlx needs the MLX weights: "
-            f"{MLX_DOWNLOAD_COMMAND}"
+            f"{model_path} is the PyTorch checkpoint; the server needs MLX weights "
+            f"({MLX_WEIGHTS_HINT})"
         )
     return kind.weights
 
@@ -453,8 +354,8 @@ def settings_from_args(
     if not args.model_path.is_dir():
         parser.error(f"model_path must be an existing directory (got {args.model_path})")
 
-    backend = _choose_backend(parser, args, platform)
-    weights = _check_checkpoint(parser, args.model_path, backend)
+    _check_platform(parser, args, platform)
+    weights = _check_checkpoint(parser, args.model_path)
 
     port = args.port
     if not 1 <= port <= 65535:
@@ -506,14 +407,5 @@ def settings_from_args(
         chunk_first=chunk_first,
         chunk_max=args.chunk_max,
         voices_dir=args.voices_dir,
-        fast_all=args.fast_all,
-        fast_text_encoder=args.fast_text_encoder,
-        fast_backbone_prefill=args.fast_backbone_prefill,
-        fast_backbone_decode=args.fast_backbone_decode,
-        fast_depth_decoder=args.fast_depth_decoder,
-        fast_codec=args.fast_codec,
-        attn_implementation=args.attn_implementation,
-        compile_cache_dir=args.compile_cache_dir,
-        backend=backend,
         weights=weights,
     )

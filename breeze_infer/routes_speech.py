@@ -170,7 +170,7 @@ from breeze_infer.synthesis import (
 from breeze_infer.text_split import split_text
 from breeze_infer.voice_prefix import VoicePrefixCache
 from breeze_infer.voice_registry import ResolvedVoice
-from models.fast_streaming import NoRoomError
+from models.runtime_seam import NoRoomError
 
 _T = TypeVar("_T")
 
@@ -894,10 +894,9 @@ def _anchor_costs_frames(
     only ever comparing an anchored room to the cap, never to the room the same piece would
     have gotten without the anchor.
 
-    `room_for_length` is already the effective limit (`min(cap, context room)` --
-    `models/fast_streaming.py`'s own rule), so the comparison needs nothing else from `cap`
-    itself; CFG rows and graph-bucket padding count in it exactly as they will when the piece
-    runs.
+    `room_for_length` is already the effective limit (`min(cap, context room)`, the
+    runtime's own rule), so the comparison needs nothing else from `cap` itself; CFG rows count
+    in it exactly as they will when the piece runs.
     """
     for length in sizing.later_lengths:
         limit_without = runtime.room_for_length(requested, length)

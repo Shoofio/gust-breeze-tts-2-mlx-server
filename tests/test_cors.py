@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import io
 from collections.abc import Callable, Iterator, Sequence
-from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -40,9 +39,9 @@ from breeze_infer.routes_health import Readiness
 from breeze_infer.routes_speech import CpuTokenizer
 from breeze_infer.settings import settings_from_args
 from breeze_infer.version_header import VersionHeaderMiddleware
-from tests.fakes import FakeRuntime, open_no_voices
+from tests.fakes import MLX_CHECKPOINT_DIR, FakeRuntime, open_no_voices
 
-MODEL_DIR = str(Path(__file__).parent)  # any existing directory; nothing loads it
+MODEL_DIR = str(MLX_CHECKPOINT_DIR)  # nothing loads it
 GOOD_ORIGIN = "https://good.example"
 EVIL_ORIGIN = "https://evil.example"
 NOT_FOUND = {"error": "not found", "code": "not_found"}

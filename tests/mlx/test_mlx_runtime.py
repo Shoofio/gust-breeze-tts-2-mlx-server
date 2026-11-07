@@ -1,5 +1,5 @@
 """The MLX runtime on the real checkpoint (research R9). Needs BREEZE_MLX_MODEL on Apple Silicon;
-token parity also needs BREEZE_MODEL (the official PyTorch checkpoint)."""
+token parity also needs BREEZE_OFFICIAL_MODEL (the official PyTorch checkpoint)."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_model_config_has_the_official_values(mlx_runtime) -> None:
 
 def test_tokenizer_matches_the_official_one(mlx_runtime, official_model: Path | None) -> None:
     if official_model is None:
-        pytest.skip("set BREEZE_MODEL to the official checkpoint to compare tokenizers")
+        pytest.skip("set BREEZE_OFFICIAL_MODEL to the official checkpoint to compare tokenizers")
     from transformers import AutoTokenizer
 
     official = AutoTokenizer.from_pretrained(official_model, fix_mistral_regex=False)

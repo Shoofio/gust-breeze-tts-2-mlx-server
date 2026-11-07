@@ -184,7 +184,7 @@ def test_a_prefix_that_leaves_no_room_is_refused(mlx_runtime) -> None:
     prefix_inputs, prefix_len = voice_prefix_inputs(mlx_runtime.tokenizer, mlx_runtime.model, codes, REF_TEXT)
     with pytest.raises(ValueError) as refused:
         mlx_runtime.build_reference_prefix(prefix_inputs)
-    # fast_streaming.build_reference_prefix's message.
+    # CUDA's build_reference_prefix message.
     assert str(refused.value) == (
         f"reference prefix of {prefix_len} tokens leaves no room to generate 12 frames after the "
         "shortest default-instruction suffix in the 2048-token context"

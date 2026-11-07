@@ -38,7 +38,6 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TypeVar
 
@@ -60,10 +59,11 @@ from breeze_infer.templates import prepare_prefix_inputs
 
 # FakeRuntime imports this lazily on its first step, i.e. on the GPU thread mid-piece; on a slow
 # mount that takes long enough to blow the timing bounds below.
-from models import fast_streaming  # noqa: F401
+from models import runtime_seam  # noqa: F401
 from tests.fakes import (
     CODEC_CODEBOOK_SIZE,
     CODEC_CODEBOOKS,
+    MLX_CHECKPOINT_DIR,
     FakeStreamingConfig,
     FakeTokenizer,
     RecordingEvents,
@@ -88,7 +88,7 @@ from tests.ws_helpers import (
 
 T = TypeVar("T")
 
-MODEL_DIR = str(Path(__file__).parent)  # any existing directory; nothing loads it
+MODEL_DIR = str(MLX_CHECKPOINT_DIR)  # nothing loads it
 MIB = 1024 * 1024
 ALLOWED_ORIGIN = "http://127.0.0.1:8000"
 CORS_ON = (f"--cors={ALLOWED_ORIGIN}",)

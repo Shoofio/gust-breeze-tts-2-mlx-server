@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 
 from breeze_infer.limits import MAX_NEW_TOKENS_CEILING
-from models.fast_streaming import PromptLength
 from models.mlx_streaming import MlxBreezeStreamingRuntime
+from models.runtime_seam import PromptLength
 from tests.fakes import FakeRuntime, FakeStreamingConfig
 
 MAX_SEQ_LEN = 2048
@@ -70,7 +70,6 @@ def test_room_matches_the_fake_runtimes_exact_length_model(
         config=FakeStreamingConfig(
             max_new_tokens=MAX_NEW_TOKENS_CEILING,
             max_seq_len=MAX_SEQ_LEN,
-            fast_backbone_prefill=False,
         ),
         default_max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
     )

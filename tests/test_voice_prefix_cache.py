@@ -49,7 +49,7 @@ async def _settle() -> None:
 
 
 class _Prefix:
-    """Stand-in for `models.fast_streaming.ReferencePrefix`: the cache reads only
+    """Stand-in for `models.mlx_streaming.MlxReferencePrefix`: the cache reads only
     `prefix_len`, and identity is enough to tell two builds apart."""
 
     def __init__(self, label: str, prefix_len: int = 10) -> None:
