@@ -33,10 +33,10 @@ Added in this fork:
 
 ## Quick start
 
-Download the ready-made real-time checkpoint, [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX), pinned to the revision the launcher expects:
+Download the ready-made real-time checkpoint, [Shoof/Gust-Breeze-TTS-2-MLX-Realtime](https://huggingface.co/Shoof/Gust-Breeze-TTS-2-MLX-Realtime), pinned to the revision the launcher expects:
 
 ```bash
-uvx --from huggingface_hub hf download Shoof/Gust-MLX --revision 928d97bb7404a6b7d2b68dbea0e08cdff4712450
+uvx --from huggingface_hub hf download Shoof/Gust-Breeze-TTS-2-MLX-Realtime --revision 928d97bb7404a6b7d2b68dbea0e08cdff4712450
 ```
 
 Then, from a clone of this repository:
@@ -58,7 +58,7 @@ Without `--precision`, the launcher runs the ready-made mixed checkpoint. The ot
 
 | `--precision` | Checkpoint | Download |
 | --- | --- | --- |
-| (none, the default) | `Shoof/Gust-MLX`: bf16 backbone, int8 depth decoder | above |
+| (none, the default) | `Shoof/Gust-Breeze-TTS-2-MLX-Realtime`: bf16 backbone, int8 depth decoder | above |
 | `mixed` | The same model, built at load from the bf16 conversion | `uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8` |
 | `8bit` | mxfp8 | `uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx-8bit --revision c6e4a2ff6ab9afba68b7853de802273ffe23fb49` |
 | `bf16` | bf16 | the `mixed` download |
@@ -82,7 +82,7 @@ An RTF below 1 means audio is produced faster than it plays. bf16 is slower than
 
 ### Real time on Apple Silicon
 
-The default checkpoint and `--precision mixed` are the same model: the bf16 weights with only the depth decoder quantized to int8. [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX) is that model saved as a checkpoint (made with `scripts/make_mixed_checkpoint.py`, verified tensor-for-tensor); `--precision mixed` quantizes the bf16 conversion at load instead. Both turn on these settings, each also available on its own (`MlxSpeedOptions` in `models/mlx_streaming.py`, and [docs/api.md](docs/api.md#speed-settings)):
+The default checkpoint and `--precision mixed` are the same model: the bf16 weights with only the depth decoder quantized to int8. [Shoof/Gust-Breeze-TTS-2-MLX-Realtime](https://huggingface.co/Shoof/Gust-Breeze-TTS-2-MLX-Realtime) is that model saved as a checkpoint (made with `scripts/make_mixed_checkpoint.py`, verified tensor-for-tensor); `--precision mixed` quantizes the bf16 conversion at load instead. Both turn on these settings, each also available on its own (`MlxSpeedOptions` in `models/mlx_streaming.py`, and [docs/api.md](docs/api.md#speed-settings)):
 
 | Setting | What it does |
 | --- | --- |
@@ -115,7 +115,7 @@ Quality against bf16, measured with `scripts/mlx_fidelity.py` (the same tokens t
 Voice directions amplify quantization error, because CFG multiplies the gap between its two rows; `8bit` quantizes the backbone too, `mixed` doesn't. In a blind listening test (one listener, ten lines, the same four builds), `8bit` was judged worst on seven lines and best on none, while `bf16`, `mixed` and an all-int8 build tied.
 
 > [!IMPORTANT]
-> The MLX weights are unofficial conversions, published by [mlx-community](https://huggingface.co/mlx-community) (8-bit, bf16) and as [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX) (mixed), and not affiliated with BreezeBlue. They are derivative models of Breeze TTS 2, so the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) still applies: research and non-commercial use only. See [License and responsible use](#license-and-responsible-use).
+> The MLX weights are unofficial conversions, published by [mlx-community](https://huggingface.co/mlx-community) (8-bit, bf16) and as [Shoof/Gust-Breeze-TTS-2-MLX-Realtime](https://huggingface.co/Shoof/Gust-Breeze-TTS-2-MLX-Realtime) (mixed), and not affiliated with BreezeBlue. They are derivative models of Breeze TTS 2, so the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) still applies: research and non-commercial use only. See [License and responsible use](#license-and-responsible-use).
 
 ## First request
 

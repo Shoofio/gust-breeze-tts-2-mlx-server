@@ -37,7 +37,7 @@ or BreezeBlue's [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/bree
 
 - `scripts/start_breeze_mac.sh` now defaults to the real-time mixed build (bf16 backbone, int8
   depth decoder), from the ready-made checkpoint
-  [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX). `--precision mixed` builds the same
+  [Shoof/Gust-Breeze-TTS-2-MLX-Realtime](https://huggingface.co/Shoof/Gust-Breeze-TTS-2-MLX-Realtime). `--precision mixed` builds the same
   model at load from the bf16 conversion; `--precision 8bit` and `bf16` are unchanged. A snapshot
   directory without its weights index counts as missing, so the launcher prints the download
   command instead of starting the server on a partial download.

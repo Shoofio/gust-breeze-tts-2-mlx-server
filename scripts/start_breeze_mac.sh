@@ -20,7 +20,7 @@ set -eu
 
 # The checkpoints, each pinned to a revision so a re-upload can't change the weights under a
 # running setup. The only place these repository ids live.
-MIXED_REPO="Shoof/Gust-MLX"
+MIXED_REPO="Shoof/Gust-Breeze-TTS-2-MLX-Realtime"
 MIXED_REVISION="928d97bb7404a6b7d2b68dbea0e08cdff4712450"
 BF16_REPO="mlx-community/Breeze-TTS-2-mlx"
 BF16_REVISION="3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
