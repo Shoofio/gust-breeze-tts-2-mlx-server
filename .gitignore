@@ -1,6 +1,5 @@
 runs/
 outputs/
-warmup_manifest.json
 .cache/
 *.wav
 
