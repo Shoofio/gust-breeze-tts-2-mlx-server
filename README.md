@@ -134,7 +134,7 @@ Generation is memory-bound: for every audio frame (80 ms of sound), the model re
 
 ## A fix in mlx-audio
 
-Along the way we found a streaming bug in [mlx-audio](https://github.com/Blaizzy/mlx-audio)'s Qwen3-TTS codec decoder, which Breeze TTS 2 uses: the transposed convolutions' bias was added twice at every chunk boundary, so streamed audio depended on the chunk size, worst in an utterance's first frames. We contributed the fix upstream as [Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003) (merged). The mlx-audio version this server pins predates it, so the server applies the same fix at load (`patch_codec_overlap_bias` in `models/mlx_streaming.py`, tested in `tests/test_mlx_codec_overlap.py`). If you stream Breeze TTS 2 with mlx-audio yourself, use a version that includes #1003.
+Along the way we found a streaming bug in [mlx-audio](https://github.com/Blaizzy/mlx-audio)'s Qwen3-TTS codec decoder, which Breeze TTS 2 uses: the transposed convolutions' bias was added twice at every chunk boundary, so streamed audio depended on the chunk size, worst in an utterance's first frames. We contributed the fix upstream as [Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003) (merged). It shipped in mlx-audio 0.5.9; this server pins 0.6.4, refuses to start on an older mlx-audio, and `tests/test_mlx_codec_overlap.py` checks that streamed decode is chunk-size independent on the stock code. If you stream Breeze TTS 2 with mlx-audio yourself, use 0.5.9 or later.
 
 ## Quality
 

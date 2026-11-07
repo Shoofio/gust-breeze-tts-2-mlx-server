@@ -76,9 +76,10 @@ explicitly set variable wins over the launcher's value.
 | `BREEZE_MLX_FAST_FIRST=N` | Send the first `N` frames one at a time, each decoded before the next frame is queued |
 | `BREEZE_MLX_CACHE_GB=N` | Cap MLX's buffer cache at `N` GB (it otherwise keeps every freed buffer for reuse) |
 
-The streamed audio does not depend on the chunk size: the server patches mlx-audio's streaming
-codec decode, which added the transposed convolutions' bias twice at every chunk boundary
-([Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003)).
+The streamed audio does not depend on the chunk size. mlx-audio before 0.5.9 added the codec's
+transposed-convolution bias twice at every chunk boundary
+([Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003)); the server refuses to
+start on such a version, with the install command.
 
 ### Startup log
 

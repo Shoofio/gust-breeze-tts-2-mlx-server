@@ -28,8 +28,10 @@ httpx==0.28.1
 
 # Apple Silicon only: the MLX backend (specs/005-mlx-mac-inference research R1, R2). The markers
 # let the model-free tests install anywhere; the server itself refuses to start off Apple Silicon.
-mlx-audio @ git+https://github.com/Blaizzy/mlx-audio@e1b19b9054bf163f5d812221a54fcc346f1890e9; sys_platform == "darwin" and platform_machine == "arm64"
-# mlx-audio only asks for mlx>=0.31.1; pin the version the backend was built and measured on, since
-# models/mlx_streaming.py relies on its attention-mask, cache and RoPE behaviour.
-mlx==0.32.3; sys_platform == "darwin" and platform_machine == "arm64"
-mlx-metal==0.32.3; sys_platform == "darwin" and platform_machine == "arm64"
+# 0.6.4 includes the streaming codec fix (Blaizzy/mlx-audio#1003, first released in 0.5.9), which
+# models/mlx_streaming.py checks for at load.
+mlx-audio==0.6.4; sys_platform == "darwin" and platform_machine == "arm64"
+# The version mlx-audio 0.6.4 pins; models/mlx_streaming.py relies on its attention-mask, cache and
+# RoPE behaviour, so it is pinned here too.
+mlx==0.32.4; sys_platform == "darwin" and platform_machine == "arm64"
+mlx-metal==0.32.4; sys_platform == "darwin" and platform_machine == "arm64"

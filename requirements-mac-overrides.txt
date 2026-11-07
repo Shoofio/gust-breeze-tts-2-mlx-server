@@ -1,6 +1,8 @@
 # Passed with requirements.txt (`uv pip install -r requirements.txt --overrides requirements-mac-overrides.txt`).
-# mlx-audio declares transformers>=5.14 and huggingface_hub>=1.0, but its Breeze path uses neither
-# (specs/005-mlx-mac-inference research R2), so these pins keep the transformers version the
-# server was built and tested on.
+# mlx-audio declares transformers>=5.14 and huggingface_hub>=1.0, but its Breeze path doesn't need
+# them (specs/005-mlx-mac-inference research R2): from transformers it takes only
+# PreTrainedTokenizerFast, which 4.57.3 has, and huggingface_hub only downloads, which the server
+# never asks it to (it loads a local snapshot). Without these overrides the install is
+# unsatisfiable; with them, the server keeps the transformers version it was built and tested on.
 transformers==4.57.3
 huggingface-hub==0.36.2

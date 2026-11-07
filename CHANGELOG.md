@@ -43,6 +43,11 @@ or BreezeBlue's [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/bree
   command instead of starting the server on a partial download.
 - `docs/api.md`: the MLX facts that were listed as "Differences on the MLX backend" are now the
   reference itself (machine and checkpoint, speed settings, startup log, slow readers on macOS).
+- mlx-audio moves from a pinned git commit (`e1b19b9`) to the 0.6.4 release, and `mlx`/`mlx-metal`
+  from 0.32.3 to 0.32.4, the version mlx-audio 0.6.4 pins. 0.6.4 includes the streaming codec fix
+  (Blaizzy/mlx-audio#1003), so the server no longer patches mlx-audio at load
+  (`patch_codec_overlap_bias` is removed); it refuses to start on an mlx-audio older than 0.5.9
+  instead. The transformers/huggingface-hub overrides are still required.
 
 ## 2.2.0 — 2026-10-04
 
