@@ -1,14 +1,21 @@
+# Install with the overrides file (mlx-audio declares newer transformers/huggingface_hub than
+# the server pins; see requirements-mac-overrides.txt):
+#   uv pip install -r requirements.txt --overrides requirements-mac-overrides.txt
+# scripts/start_breeze_mac.sh does this when the environment lacks mlx.
+
+# CPU-side tensors: the prompt templates, reference codes and token frames are torch tensors,
+# converted to MLX per request (specs/005-mlx-mac-inference research R4). No CUDA is used.
 torch==2.9.1
-torchaudio==2.9.1
-qwen-tts==0.1.1
+# The text tokenizer and the generation configs (AutoTokenizer, GenerationConfig).
 transformers==4.57.3
 numpy>=2.0
 soundfile>=0.13
+# Reference audio is resampled to the codec's rate with librosa.resample, as qwen-tts does.
+librosa==1.0.0
 # The web stack is pinned exactly because abort-on-failure and disconnect
 # handling rely on its internals (specs/003-cpp-compatible-api research R2, R3).
 # Transitive dependencies (anyio, h11) still float, and uvicorn must run with
 # h11 (not httptools); the abort test planned in T040 will guard this.
-# docker/smoke_check.py checks these pins in the image.
 fastapi==0.141.1
 starlette==1.6.0
 uvicorn==0.52.4
@@ -19,7 +26,8 @@ ruff>=0.12
 # Test dependency: real-server tests assert on incomplete chunked transfers.
 httpx==0.28.1
 
-# Apple Silicon only: the MLX backend (specs/005-mlx-mac-inference research R1, R2).
+# Apple Silicon only: the MLX backend (specs/005-mlx-mac-inference research R1, R2). The markers
+# let the model-free tests install anywhere; the server itself refuses to start off Apple Silicon.
 mlx-audio @ git+https://github.com/Blaizzy/mlx-audio@e1b19b9054bf163f5d812221a54fcc346f1890e9; sys_platform == "darwin" and platform_machine == "arm64"
 # mlx-audio only asks for mlx>=0.31.1; pin the version the backend was built and measured on, since
 # models/mlx_streaming.py relies on its attention-mask, cache and RoPE behaviour.
