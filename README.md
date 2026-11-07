@@ -4,13 +4,13 @@
 > This is an independent derivative of [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts). It is not affiliated with or endorsed by BreezeBlue. The code is Apache 2.0. The Breeze TTS 2 model weights, derivative models and self-hosted outputs are under the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE): research and non-commercial use only. See [License and responsible use](#license-and-responsible-use).
 
 > [!NOTE]
-> This fork of [northcraftfoundries/breeze-tts2-fast-streaming-api](https://github.com/northcraftfoundries/breeze-tts2-fast-streaming-api) adds real-time streaming on Apple Silicon: first audio ~140 ms (plain) / ~210 ms (with a voice direction) on an M4 Pro. See [Real time on Apple Silicon](#real-time-on-apple-silicon---precision-mixed).
+> This fork of [northcraftfoundries/breeze-tts2-fast-streaming-api](https://github.com/northcraftfoundries/breeze-tts2-fast-streaming-api) runs on Apple Silicon Macs only, through MLX, with real-time streaming: first audio ~140 ms (plain) / ~210 ms (with a voice direction) on an M4 Pro. See [Real time on Apple Silicon](#real-time-on-apple-silicon). For NVIDIA GPUs, use [northcraftfoundries/breeze-tts2-fast-streaming-api](https://github.com/northcraftfoundries/breeze-tts2-fast-streaming-api) or BreezeBlue's own [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts).
 
 ## What this is
 
-Breeze TTS 2 is an open-weight text-to-speech model by BreezeBlue. This repository takes the upstream PyTorch inference code and adds a streaming HTTP and WebSocket server around it.
+Breeze TTS 2 is an open-weight text-to-speech model by BreezeBlue ([Hugging Face](https://huggingface.co/BreezeBlue/Breeze-TTS-2)). This repository serves it from a streaming HTTP and WebSocket server on an Apple Silicon Mac, running the model on the GPU through [MLX](https://github.com/ml-explore/mlx) and mlx-audio's Breeze port, with the prompt building, sampling and voice rules of BreezeBlue's upstream inference code.
 
-From upstream: the Breeze TTS 2 PyTorch inference code (model by BreezeBlue, [Hugging Face](https://huggingface.co/BreezeBlue/Breeze-TTS-2)).
+The model's voice modes:
 
 - **Voice Clone**: uses reference audio with its exact transcript to preserve timbre, rhythm, emotion, and style.
 - **Voice Design**: creates a distinctive voice from a natural-language description, without reference audio.
@@ -23,140 +23,84 @@ Added in this fork:
 - `GET /v1/audio/speech.wav`, a progressive WAV stream that a browser `<audio>` element can play.
 - Single-GPU request handling: one generation at a time. `POST /v1/audio/speech` gets `409 busy` when the GPU is in use; the `.wav` route queues for up to 60 s.
 - Optional CORS (`--cors`).
-- Fast-path inference options, enabled together with `--fast-all`.
-- A native Windows launcher, `scripts/start_breeze.ps1`.
-- An MLX backend for Apple Silicon Macs, started with `scripts/start_breeze_mac.sh`. See [Quick start (macOS, Apple Silicon)](#quick-start-macos-apple-silicon).
-- CPU and GPU test suites.
+- The MLX runtime for Apple Silicon, started with `scripts/start_breeze_mac.sh`. See [Quick start](#quick-start).
+- Model-free and MLX test suites.
 
 ## Requirements
 
-- An NVIDIA GPU with CUDA, or an Apple Silicon Mac (M1 or later) with at least 16 GB of memory.
-- GPU memory: about 7.7 GiB for eager inference, about 14.4 GiB with `--fast-all`. A 12 GB GPU is recommended for eager and a 24 GB GPU for the fast path.
-- Python 3.12 (uv installs it).
-- [uv](https://docs.astral.sh/uv/).
-- Linux or WSL2, native Windows 10/11, or macOS 14 (Sonoma) or later on Apple Silicon.
-- On Windows, `--fast-all` needs the Visual Studio C++ build tools (MSVC). The launcher installs `triton-windows` for `torch.compile`, and it compiles through MSVC, which it finds from the Visual Studio install.
+- An Apple Silicon Mac (M1 or later) with at least 16 GB of memory, on macOS 14 (Sonoma) or later, the oldest release MLX ships for. The server refuses to start on an Intel Mac, on another system, or with less memory.
+- Python 3.12 and [uv](https://docs.astral.sh/uv/) (uv installs Python).
 
-## Quick start (Linux / WSL)
+## Quick start
+
+Download the ready-made real-time checkpoint, [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX), pinned to the revision the launcher expects:
 
 ```bash
-git clone https://github.com/northcraftfoundries/breeze-tts2-fast-streaming-api.git
-cd breeze-tts2-fast-streaming-api
-uv venv --python 3.12
-uv pip install -r requirements.txt
-uvx --from huggingface_hub hf download BreezeBlue/Breeze-TTS-2
-scripts/start_breeze.sh
-```
-
-The download goes to the HuggingFace cache (`$HF_HOME`, default `~/.cache/huggingface`), which is where the launcher looks. Set `HF_HOME` if your cache is elsewhere. Keep the repository name exactly as `BreezeBlue/Breeze-TTS-2`: the launcher looks for the cache directory `models--BreezeBlue--Breeze-TTS-2`.
-
-The launcher binds `0.0.0.0:8080` (WebSocket on `8081`), turns on `--fast-all`, and enables CORS for every origin (`*`). Extra arguments are passed to the server after those defaults, and a later `--host` or `--cors` overrides the launcher's value:
-
-```bash
-scripts/start_breeze.sh --host 127.0.0.1 --cors=http://127.0.0.1:8000
-```
-
-> [!WARNING]
-> With the launcher's defaults, any device on your network and any web page can use the server, including uploading and deleting voices. To keep it local, pass `--host 127.0.0.1`.
-
-To run the server without the launcher, give it the checkpoint directory:
-
-```bash
-uv run python -m breeze_infer.api <checkpoint dir> --fast-all
-```
-
-Run this way, it listens on `127.0.0.1:8080` and CORS is off. See [docs/api.md](docs/api.md#launch-options) for every option.
-
-## Quick start (Windows)
-
-In PowerShell:
-
-```powershell
-git clone https://github.com/northcraftfoundries/breeze-tts2-fast-streaming-api.git
-cd breeze-tts2-fast-streaming-api
-uvx --from huggingface_hub hf download BreezeBlue/Breeze-TTS-2
-.\scripts\start_breeze.ps1
-```
-
-If PowerShell refuses with "running scripts is disabled on this system", Windows' default execution policy is blocking local scripts. Allow them for your account once with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or run this launch as `powershell -ExecutionPolicy Bypass -File scripts\start_breeze.ps1`.
-
-The first run builds a separate `.venv-win` (CUDA torch, the packages in `requirements.txt`, and `triton-windows`). Later runs skip that setup unless `requirements.txt` or the Triton pin changes. The script reads the model from `$env:HF_HOME`, or `~\.cache\huggingface` if that is unset, and uses the same defaults as the Linux launcher: `0.0.0.0:8080`, `--fast-all`, CORS `*`.
-
-Common parameters:
-
-| Parameter | Meaning |
-| --- | --- |
-| `-BindHost` | Interface to bind (default `0.0.0.0`). Use `127.0.0.1` to keep the server local. |
-| `-Port` | HTTP port (default `8080`). |
-| `-WsPort` | WebSocket port (default HTTP port + 1); `disabled` turns it off. |
-| `-Cors` | CORS origins (default `*`); pass a list to narrow it. |
-| `-ModelPath` | Use this checkpoint directory instead of the HuggingFace cache. |
-| `-NoFastAll` | Run the eager path (about 7.7 GiB VRAM) instead of the fast path. |
-| `-AttnImplementation` | `eager` (default) or `sdpa`. |
-| `-SkipSetup` | Skip the environment check and launch. |
-| `-Reinstall` | Delete `.venv-win` and rebuild it. |
-
-Because it binds `0.0.0.0` by default, Windows Firewall will prompt on the first launch. `-BindHost 127.0.0.1` keeps the server local.
-
-## Quick start (macOS, Apple Silicon)
-
-Requirements: an Apple Silicon Mac (M1 or later), at least 16 GB of memory, and macOS 14 (Sonoma) or later, the oldest release MLX ships for. The server refuses to start on an Intel Mac or with less memory. Python 3.12 and [uv](https://docs.astral.sh/uv/) are needed, as on Linux.
-
-The Mac backend runs community MLX conversions of the model, in 8-bit or bf16. Download one, pinned to a revision so every install gets the same weights:
-
-```bash
-# 8-bit (default, recommended for 16 GB Macs)
-uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx-8bit --revision c6e4a2ff6ab9afba68b7853de802273ffe23fb49
-
-# bf16
-uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8
+uvx --from huggingface_hub hf download Shoof/Gust-MLX --revision 928d97bb7404a6b7d2b68dbea0e08cdff4712450
 ```
 
 Then, from a clone of this repository:
 
 ```bash
-scripts/start_breeze_mac.sh [--precision 8bit|bf16|mixed] [server options...]
+scripts/start_breeze_mac.sh [--precision mixed|8bit|bf16] [server options...]
 ```
 
-The precision defaults to `8bit`. If the Python environment lacks `mlx`, the launcher installs the dependencies with `requirements-mac-overrides.txt`. It looks for the pinned snapshot in the HuggingFace cache (`$HF_HOME`, default `~/.cache/huggingface`), and if it is missing it prints the download command above and exits. It has the same defaults as `start_breeze.sh`: `0.0.0.0:8080` and CORS `*`. It doesn't pass `--fast-all`, which is CUDA-only. Extra arguments go to the server, and a later `--host` or `--cors` overrides the launcher's value. The warning under [Quick start (Linux / WSL)](#quick-start-linux--wsl) about the open defaults applies here too: pass `--host 127.0.0.1` to keep the server local.
+If the Python environment lacks `mlx`, the launcher installs the dependencies with `requirements-mac-overrides.txt`. It looks for the pinned snapshot in the HuggingFace cache (`$HF_HOME`, default `~/.cache/huggingface`), and if it is missing it prints the download command and exits. The launcher binds `0.0.0.0:8080` (WebSocket on `8081`) and enables CORS for every origin (`*`). Extra arguments go to the server, and a later `--host` or `--cors` overrides the launcher's value:
 
-Measured on an Apple M5 with 16 GB with a browser and an editor open. The speed columns give the range of the per-case medians (10 runs each) over the five benchmark cases; the slowest single first audio was 0.42 s at 8-bit and 0.68 s at bf16. Peak memory is the server's physical footprint after medium-length requests.
+```bash
+scripts/start_breeze_mac.sh --host 127.0.0.1 --cors=http://127.0.0.1:8000
+```
+
+> [!WARNING]
+> With the launcher's defaults, any device on your network and any web page can use the server, including uploading and deleting voices. To keep it local, pass `--host 127.0.0.1`.
+
+Without `--precision`, the launcher runs the ready-made mixed checkpoint. The other choices use the community MLX conversions by [mlx-community](https://huggingface.co/mlx-community), pinned the same way:
+
+| `--precision` | Checkpoint | Download |
+| --- | --- | --- |
+| (none, the default) | `Shoof/Gust-MLX`: bf16 backbone, int8 depth decoder | above |
+| `mixed` | The same model, built at load from the bf16 conversion | `uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8` |
+| `8bit` | mxfp8 | `uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx-8bit --revision c6e4a2ff6ab9afba68b7853de802273ffe23fb49` |
+| `bf16` | bf16 | the `mixed` download |
+
+To run the server without the launcher, give it the checkpoint directory:
+
+```bash
+uv run python -m breeze_infer.api <checkpoint dir>
+```
+
+Run this way, it listens on `127.0.0.1:8080`, CORS is off and the speed settings below are off unless set in the environment. See [docs/api.md](docs/api.md#launch-options) for every option.
+
+Measured on an Apple M5 with 16 GB with a browser and an editor open, before `mixed` existed. The speed columns give the range of the per-case medians (10 runs each) over the five benchmark cases; the slowest single first audio was 0.42 s at 8-bit and 0.68 s at bf16. Peak memory is the server's physical footprint after medium-length requests.
 
 | Precision | First audio | Real-time factor (RTF) | Peak memory |
 | --- | --- | --- | --- |
 | 8-bit | 0.32–0.41 s | 0.84–0.88 | 7.0 GB |
 | bf16 | 0.49–0.55 s | 1.47–1.50 | 9.7 GB |
 
-An RTF below 1 means audio is produced faster than it plays. bf16 is slower than real time on this machine, so streamed audio can't keep up with playback, and its memory use pushed the Mac into swap during the run. Use 8-bit on a 16 GB Mac. The details are in `specs/005-mlx-mac-inference/research/live-perf.md`.
+An RTF below 1 means audio is produced faster than it plays. bf16 is slower than real time on this machine, so streamed audio can't keep up with playback, and its memory use pushed the Mac into swap during the run. The details are in `specs/005-mlx-mac-inference/research/live-perf.md`.
 
-### Real time on Apple Silicon: `--precision mixed`
+### Real time on Apple Silicon
 
-```bash
-uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8
-scripts/start_breeze_mac.sh --precision mixed [server options...]
-```
-
-The same model is also a ready-made checkpoint, [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX) (made with `scripts/make_mixed_checkpoint.py`, verified tensor-for-tensor): pass its directory to `python -m breeze_infer.api` and the server loads it as weights `mixed`.
-
-`mixed` loads the bf16 weights and turns on four settings, each also available on its own (`MlxSpeedOptions` in `models/mlx_streaming.py`):
+The default checkpoint and `--precision mixed` are the same model: the bf16 weights with only the depth decoder quantized to int8. [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX) is that model saved as a checkpoint (made with `scripts/make_mixed_checkpoint.py`, verified tensor-for-tensor); `--precision mixed` quantizes the bf16 conversion at load instead. Both turn on these settings, each also available on its own (`MlxSpeedOptions` in `models/mlx_streaming.py`, and [docs/api.md](docs/api.md#speed-settings)):
 
 | Setting | What it does |
 | --- | --- |
-| `BREEZE_MLX_QUANT=depth:8` | Quantizes only the depth decoder to int8 at load. The frame loop is memory-bound: each frame reads the backbone once and the depth decoder 15 times, so the depth decoder is about three quarters of the bytes. The backbone, which sets prosody and is where a voice direction lands, stays exact. |
+| `BREEZE_MLX_QUANT=depth:8` | Quantizes only the depth decoder to int8 at load (`--precision mixed`; the ready-made checkpoint already is). The frame loop is memory-bound: each frame reads the backbone once and the depth decoder 15 times, so the depth decoder is about three quarters of the bytes. The backbone, which sets prosody and is where a voice direction lands, stays exact. |
 | `BREEZE_MLX_COMPILE=1` | Runs each frame's sampling and its 15 depth-decoder steps as one `mx.compile` graph. |
 | `BREEZE_MLX_FAST_FIRST=6` | Sends the first six frames one at a time, each decoded before the next frame is queued, with `--chunk-first 1 --chunk-max 1`. The first audio no longer waits for three frames. |
 | `BREEZE_MLX_CACHE_GB=1` | Caps MLX's buffer cache, which otherwise kept ~6 GB of freed buffers. |
 
-It also fixes a streaming bug in the pinned mlx-audio that made the decoded audio depend on the chunk size (the transposed convolutions' bias was added twice at every chunk boundary, worst in an utterance's first frames; fixed upstream in [Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003)). This applies to every precision.
+The server also fixes a streaming bug in the pinned mlx-audio that made the decoded audio depend on the chunk size (the transposed convolutions' bias was added twice at every chunk boundary, worst in an utterance's first frames; fixed upstream in [Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003)). This applies to every precision.
 
 Measured on an Apple M4 Pro (14-core CPU, 20-core GPU, 48 GB) with `scripts/bench_mac.py`: 24 lines of one to four Harvard sentences, two in three with a voice direction at CFG 2, a 24 s LibriSpeech reference (speaker 1272, dev-clean `1272-128104-0000` to `-0002`, CC BY 4.0) registered once. "Stall-free start" is the first audio plus any buffer playback needs so it never runs dry: `8bit` and `mixed` needed none on any line; `bf16`, at RTF 0.86, needed ~70 ms on every line (its default 25-frame chunks starve playback outright, hence `--chunk-max 4`).
 
 | Build | Stall-free start, plain / directed (median) | RTF, directed | Memory |
 | --- | --- | --- | --- |
 | BreezeBlue's PyTorch, bf16, on the Mac GPU (`model.generate`; its streaming path is CUDA-only) | no streaming: a one-sentence line takes ~6 s | 2.26 (plain lines) | 11 GB |
-| `8bit` (default) | 212 / 297 ms | 0.58 | 13 GB |
+| `8bit` | 212 / 297 ms | 0.58 | 13 GB |
 | `bf16` (`--chunk-max 4`) | 380 / 456 ms | 0.86 | 15 GB |
-| `mixed` | 139 / 206 ms | 0.62 | 8.9 GB |
+| `mixed` (default) | 139 / 206 ms | 0.62 | 8.9 GB |
 | *For reference: RTX 3090 (power-capped at 250 W of 350 W), BreezeBlue's CUDA fast path via a small server wrapper, re-processing the reference on every line* | *87 / 160 ms* | *0.50* | *19.7 GB VRAM + 4 GB RAM* |
 
 On the same Mac, BreezeBlue's own PyTorch code runs at RTF 2.26 (over twice slower than real time) and can't stream; `mixed` is ~3.6x faster and streams its first audio in 139 / 206 ms. For scale, a power-capped RTX 3090 running BreezeBlue's CUDA fast path measured 87 / 160 ms in our setup. The MLX builds' memory includes MLX's buffer cache, uncapped in `8bit` and `bf16` (hence 13 GB for `8bit`) and capped at 1 GB in `mixed`.
@@ -170,13 +114,8 @@ Quality against bf16, measured with `scripts/mlx_fidelity.py` (the same tokens t
 
 Voice directions amplify quantization error, because CFG multiplies the gap between its two rows; `8bit` quantizes the backbone too, `mixed` doesn't. In a blind listening test (one listener, ten lines, the same four builds), `8bit` was judged worst on seven lines and best on none, while `bf16`, `mixed` and an all-int8 build tied.
 
-The HTTP and WebSocket API is the same on both backends. [docs/api.md](docs/api.md#differences-on-the-mlx-backend) lists the differences.
-
-> [!NOTE]
-> `infer.py` is CUDA-only and doesn't run on the MLX backend. On a Mac, synthesis goes through the server.
-
 > [!IMPORTANT]
-> The MLX weights are an unofficial community conversion, published by [mlx-community](https://huggingface.co/mlx-community) and not affiliated with BreezeBlue. They are derivative models of Breeze TTS 2, so the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) still applies: research and non-commercial use only. See [License and responsible use](#license-and-responsible-use).
+> The MLX weights are unofficial conversions, published by [mlx-community](https://huggingface.co/mlx-community) (8-bit, bf16) and as [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX) (mixed), and not affiliated with BreezeBlue. They are derivative models of Breeze TTS 2, so the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) still applies: research and non-commercial use only. See [License and responsible use](#license-and-responsible-use).
 
 ## First request
 
@@ -204,85 +143,66 @@ curl -G http://127.0.0.1:8080/v1/audio/speech.wav \
 
 Full reference: [docs/api.md](docs/api.md).
 
-## Command-line synthesis
+## Voice clone, design and direction
 
-`infer.py` synthesizes a file directly, without the server. The first argument is the checkpoint directory: the downloaded snapshot directory (under `$HF_HOME/hub/models--BreezeBlue--Breeze-TTS-2/snapshots/`).
-
-Voice clone, from clean reference audio and its exact transcript:
+The voice modes are form fields on the same route. Voice clone, from clean reference audio and its exact transcript:
 
 ```bash
-uv run python infer.py <checkpoint dir> \
-  --ref-audio reference_en.wav \
-  --ref-text "This is the exact transcript of the English reference audio." \
-  --text "(sigh) It is good to hear your voice again after all this time." \
-  --output outputs/voice_clone_en.wav
+curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+  -F "ref_audio=@reference_en.wav" \
+  -F "ref_text=This is the exact transcript of the English reference audio." \
+  --form-string "text=(sigh) It is good to hear your voice again after all this time." \
+  --output voice_clone_en.pcm
 ```
 
 Reference audio should contain clean, non-looping speech with minimal background
-noise. `--ref-text` should match the complete spoken content of the reference
+noise. `ref_text` should match the complete spoken content of the reference
 audio; if speech is repeated in the audio, include those repetitions in the
-transcript.
+transcript. To reuse a reference, save it once with `POST /v1/voices` and pass its `voice_id`.
 
-Voice design, from a description with no reference audio. Match the instruction language to the target text; `--cfg-scale 4` strengthens instruction-following:
-
-```bash
-uv run python infer.py <checkpoint dir> \
-  --text "(sigh) Welcome aboard. Your journey begins now." \
-  --instruction "A warm, thoughtful young woman with a clear voice and a calm, reflective delivery." \
-  --cfg-scale 4 \
-  --output outputs/voice_design_en.wav
-```
-
-Voice direction, which keeps the reference speaker's identity while steering delivery:
+Voice design, from a description with no reference audio. Match the instruction language to the target text; `cfg_scale=4` strengthens instruction-following:
 
 ```bash
-uv run python infer.py <checkpoint dir> \
-  --ref-audio reference.wav \
-  --ref-text "This is the exact transcript of the reference audio." \
-  --text "(clears throat) We need to discuss what happened last night." \
-  --instruction "Speak slowly with a restrained, serious tone." \
-  --cfg-scale 4 \
-  --output outputs/voice_direction.wav
+curl -X POST http://127.0.0.1:8080/v1/audio/speech \
+  --form-string "text=(sigh) Welcome aboard. Your journey begins now." \
+  -F "instruction=A warm, thoughtful young woman with a clear voice and a calm, reflective delivery." \
+  -F "cfg_scale=4" \
+  --output voice_design_en.pcm
 ```
+
+Voice direction, which keeps the reference speaker's identity while steering delivery: send `ref_audio` and `ref_text` (or a `voice_id`) together with an `instruction` and `cfg_scale`; [docs/api.md](docs/api.md#post-v1audiospeech) has the example. A `text` that starts with `(` needs `--form-string`, as above: with `-F`, curl reads a leading `(` specially.
 
 Chinese examples are in upstream's [README](https://github.com/breezeblue-ai/breeze-tts#readme).
-
-## Docker
-
-See [docker/README.md](docker/README.md). Build the image with:
-
-```bash
-bash docker/build.sh
-```
 
 ## Development
 
 | Action | Command |
 | --- | --- |
-| Run the server (CORS open to every origin by default; narrow it with `--cors=http://127.0.0.1:8000`) | `scripts/start_breeze.sh` |
-| Run the server on an Apple Silicon Mac (MLX backend) | `scripts/start_breeze_mac.sh` |
-| Unit and integration tests (no GPU) | `.venv/bin/pytest` |
-| GPU tests | `BREEZE_MODEL=<path> .venv/bin/pytest -m gpu` |
-| MLX tests (Apple Silicon Mac) | `BREEZE_MLX_MODEL=<path> .venv/bin/pytest -m mlx` |
+| Run the server (CORS open to every origin by default; narrow it with `--cors=http://127.0.0.1:8000`) | `scripts/start_breeze_mac.sh` |
+| Unit and integration tests (no model) | `.venv/bin/pytest` |
+| MLX tests (loads the model) | `BREEZE_MLX_MODEL=<path> .venv/bin/pytest -m mlx` |
 | Lint | `.venv/bin/ruff check .` |
-| Benchmark | `.venv/bin/python -m breeze_infer.bench_api --url http://127.0.0.1:8080` (defaults `--warmup 3 --runs 10`) |
+| Benchmark (streaming latency on the Mac) | `.venv/bin/python scripts/bench_mac.py --help` |
+| Benchmark (HTTP API) | `.venv/bin/python -m breeze_infer.bench_api --url http://127.0.0.1:8080` (defaults `--warmup 3 --runs 10`) |
+| Quality against bf16 | `.venv/bin/python scripts/mlx_fidelity.py --help` |
+| Build the mixed checkpoint | `.venv/bin/python scripts/make_mixed_checkpoint.py --help` |
 | SillyTavern live test | `node tests/live/sillytavern/run.mjs <health\|voices\|speech\|full>` |
 | C++ docs example check | `.venv/bin/python -m tests.live.cpp_examples --url http://127.0.0.1:8080` |
 
-See `specs/003-cpp-compatible-api/quickstart.md` for the full walkthrough these commands are
-drawn from.
+`specs/` holds the design history (the C++-compatible API, the browser WAV stream, the MLX port). It was written while this server also had a CUDA backend, so it describes that backend too.
 
 Environment variables:
 
-- `HF_HOME`: the HuggingFace cache the launchers read the model from.
-- `BREEZE_MODEL`: checkpoint path; enables the GPU tests (without it they skip).
+- `HF_HOME`: the HuggingFace cache the launcher reads the model from.
 - `BREEZE_MLX_MODEL`: path to an MLX snapshot directory; enables the MLX tests (without it they skip).
-- `REFERENCE_VOICES_DIR`: used by the reference-voice GPU tests, `bench_api` and the live scripts. It expects `<dir>/eric/eric.wav` and `eric.txt`.
-- `BREEZE_CPP_ROOT`: path to a checkout of the C++ server, used by the C++ golden and docs tools.
+- `BREEZE_OFFICIAL_MODEL`: path to the official `BreezeBlue/Breeze-TTS-2` checkpoint; the MLX tests then also compare the tokenizers.
+- `BREEZE_MLX_*`: the speed settings, see [docs/api.md](docs/api.md#speed-settings).
+- `REFERENCE_VOICES_DIR`: used by `bench_api` and the live scripts. It expects `<dir>/eric/eric.wav` and `eric.txt`.
+- `BREEZE_CPP_ROOT`: path to a checkout of the C++ server, used by the C++ golden and docs tools (API and text-splitting parity).
 
 ## Relationship to upstream
 
-This repository is derived from [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts). It branched at upstream commit `43e2ea1` (2026-09-04), and later upstream commits were merged selectively. The files in `breeze_infer/` and the launch scripts are substantially modified or new. See [CHANGELOG.md](CHANGELOG.md) for what changed and how the API differs.
+This repository is derived from [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts). It branched at upstream commit `43e2ea1` (2026-09-04), and later upstream commits were merged selectively. The files in `breeze_infer/` and the launch scripts are substantially modified or new. Upstream's PyTorch model and its CUDA streaming path are no longer included: this fork runs the model through MLX (`models/mlx_streaming.py`), following upstream's prompt templates, sampling defaults and CFG rules. See [CHANGELOG.md](CHANGELOG.md) for what changed and how the API differs.
 
 Upstream's model card, blog and community links: [Hugging Face](https://huggingface.co/BreezeBlue/Breeze-TTS-2), [blog](https://breezeblue.ai/breeze-tts-2). Report issues with this fork in this repository, not upstream.
 

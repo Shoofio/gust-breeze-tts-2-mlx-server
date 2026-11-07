@@ -290,8 +290,7 @@ def prepare_piece(
     ``tokenizer``/``model`` are the plain model parts `templates.prepare_inputs` already
     takes, not the streaming runtime -- the runtime doesn't itself need to be on the GPU
     thread for this step, only its tokenizer and model do, and keeping them separate
-    matches `tests/gpu/conftest.py`'s own ``synthesize`` helper and lets tests pass
-    ``tests/fakes.py``'s ``FakeTokenizer``/``fake_model()`` without a `FakeRuntime` at all.
+    lets tests pass ``tests/fakes.py``'s ``FakeTokenizer``/``fake_model()`` without a `FakeRuntime` at all.
 
     No CFG negative/dual-branch inputs are built here (``guidance_scale_ref``/``_ins``
     stay ``None``): T038 only exercises single-reference, single-CFG pieces, same as
@@ -439,8 +438,7 @@ def anchor_sizing(
     per-frame and the fixed part. That the addition is the same for every later piece, every
     CFG row and any frame count holds because the reference segments come first on every row,
     ahead of the same text segment, and the tokenizer splits the prompt at the audio markers
-    between them; `tests/test_synthesis.py` checks it with the fake tokenizer and
-    `tests/gpu/test_speech_long_text.py` with the real one.
+    between them; `tests/test_synthesis.py` checks it with the fake tokenizer.
 
     ``tokenizer`` follows `predicted_room`'s rule: one no other thread is using.
     """

@@ -11,10 +11,11 @@ Contract version `2.1.0`. This section is the user-facing reference; the machine
 is `specs/003-cpp-compatible-api/contracts/http-api.md` and `contracts/ws-api.md`, plus the 2.1.0
 addendum `specs/004-browser-wav-stream/contracts/http-wav-stream.md`.
 
-Start it the same way as the CLI, pointing at the checkpoint directory:
+The server runs on an Apple Silicon Mac, on the GPU through MLX. Start it with
+`scripts/start_breeze_mac.sh`, or point it at an MLX checkpoint directory:
 
 ```bash
-python -m breeze_infer.api ../breeze-tts-2 --host 0.0.0.0 --port 8080 --fast-all
+uv run python -m breeze_infer.api <checkpoint dir> --host 127.0.0.1 --port 8080
 ```
 
 The HTTP API listens on `--port` (default `8080`). A WebSocket session endpoint listens on
@@ -28,7 +29,7 @@ failed to bind.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `model_path` (positional) | required | Path to the model checkpoint directory |
-| `--backend {cuda,mlx}` | `mlx` on macOS, `cuda` elsewhere | Inference backend. `mlx` needs an Apple Silicon Mac with at least 16 GB of memory and the MLX weights; `cuda` is not available on macOS. See [Differences on the MLX backend](#differences-on-the-mlx-backend) |
+| `--backend mlx` | `mlx` | Accepted so existing launch commands keep working; MLX is the only backend. `--backend cuda` is refused at startup |
 | `--host HOST` | `127.0.0.1` | Bind address for HTTP and WebSocket |
 | `--port N` | `8080` | HTTP port, `1`–`65535` |
 | `--ws-port N\|disabled` | HTTP port + 1 | WebSocket port, `1`–`65535`, must differ from `--port`; `disabled` turns the WebSocket server off |
@@ -37,76 +38,55 @@ failed to bind.
 | `--chunk-first N` | `1` | Codec frames (1,920 samples each) in the first streamed chunk |
 | `--chunk-max N` | `25` | Codec frames the stream ramps up to |
 | `--voices-dir PATH` | `./voices` | Directory holding saved voice files |
-| `--fast-all` / `--no-fast-all` | unset | Enable or disable every fast-path stage at once. CUDA only |
-| `--fast-text-encoder` / `--no-fast-text-encoder` | off | Fast path for the text encoder stage. CUDA only |
-| `--fast-backbone-prefill` / `--no-fast-backbone-prefill` | off | Fast path for backbone prefill. CUDA only |
-| `--fast-backbone-decode` / `--no-fast-backbone-decode` | off | Fast path for backbone decode. CUDA only |
-| `--fast-depth-decoder` / `--no-fast-depth-decoder` | off | Fast path for the depth decoder. CUDA only |
-| `--fast-codec` / `--no-fast-codec` | off | Fast path for the codec. CUDA only |
-| `--attn-implementation {eager,sdpa}` | `eager` | Attention kernel for the backbone and text encoder (the fast text-encoder stage always runs `sdpa` regardless of this setting). CUDA only |
-| `--compile-cache-dir PATH` | `$TORCHINDUCTOR_CACHE_DIR` if set, else `./.cache/torchinductor` | Where `torch.compile` artifacts persist between starts. CUDA only |
 
 `--port`, `--ws-port`, `--split-chars`, `--chunk-first` and `--chunk-max` must be plain unsigned
-integers (no leading `+`/`-`, no decimal point, no exponent). See
-[Fast Inference Options](#fast-inference-options) below for what each fast-path stage changes.
+integers (no leading `+`/`-`, no decimal point, no exponent). An unknown option, including the
+`--fast-*`, `--attn-implementation` and `--compile-cache-dir` options of the CUDA releases, stops
+startup with argparse's usage error.
 
-Options marked "CUDA only" are refused with `--backend mlx`.
+### Machine and checkpoint
 
-### Differences on the MLX backend
+The server refuses to start on anything but an Apple Silicon Mac (M1 or later), and on a Mac with
+less than 16 GB of memory. MLX ships for macOS 14 (Sonoma) or later.
 
-`--backend mlx` runs the model on the Mac's GPU through MLX and serves the same routes, fields,
-validation, error codes and audio format as the CUDA backend. Start it with
-`scripts/start_breeze_mac.sh`, or pass the MLX snapshot directory as `model_path`; the README's
-[macOS quick start](../README.md#quick-start-macos-apple-silicon) has the download commands. What
-differs:
+`model_path` must be an MLX checkpoint: its `config.json` must say `"model_type": "breeze_tts"`.
+The server reads the precision from that file and reports it as `weights` in the startup log:
 
-- **CUDA-only options are refused.** `--fast-all`, `--no-fast-all`, every `--fast-*` stage option
-  and its `--no-` form, `--attn-implementation` and `--compile-cache-dir` stop startup with
-  `<options> only apply to --backend cuda; remove them`. The server also refuses `--backend mlx`
-  on anything but an Apple Silicon Mac, and on a Mac with less than 16 GB of memory.
-- **The weights must be MLX weights.** The PyTorch checkpoint is refused with the download
-  command. The server reads bf16, 8-bit (mxfp8) or mixed (affine 8-bit, from
-  `scripts/make_mixed_checkpoint.py`) from the checkpoint itself, and other checkpoint
-  quantizations are refused. `BREEZE_MLX_QUANT` (e.g. `depth:8`) quantizes parts of a bf16
-  checkpoint at load instead; it and the other `BREEZE_MLX_*` speed settings are described in the
-  README's [Real time on Apple Silicon](../README.md#real-time-on-apple-silicon---precision-mixed).
-- **A stalled reader is not evicted by the kernel.** On Linux the server also sets
-  `TCP_USER_TIMEOUT`, so the kernel drops the socket of a client that stops reading. macOS has no
-  such option, so the server doesn't set it. The application limits are the same on both
-  platforms: a send blocked for 30 s (600 s on the `.wav` route) ends the stream, and a client
-  reading slower than the minimum delivery rate is cut, in both cases releasing the GPU. What
-  macOS lacks is the last step: the socket of a client that never reads again stays open until
-  the client closes it or the server shuts down.
-- **The room limit is CUDA's exact-length limit.** The MLX backend doesn't pad prompts to
-  32-token buckets. It accepts the same text lengths as the CUDA backend without `--fast-all`,
-  which is up to 31 more frames than `--fast-all` accepts for the same prompt before
-  `400 text_too_long`.
-- **Saved voices are not guaranteed to move between backends.** The file format is unchanged, and
-  a voice loads only when its codec fingerprint matches the running codec; otherwise it is skipped
-  at startup. Today the MLX codec files are the official ones, so the fingerprints match and voices
-  do load on either backend, but each backend encodes reference audio slightly differently, so a
-  voice saved on one may sound slightly different on the other.
-- **`model.loaded` has two more fields, and some are null.** The startup log event gains
-  `backend` (`"cuda"` or `"mlx"`) and `weights` (`"bf16"`, `"8bit"` or `"mixed"`; always `"bf16"` on CUDA).
-  On the MLX backend `device` is `"mlx:gpu"`, and `compile_cache_dir`, `torch_key`,
-  `fx_graph_cache_hits` and `fx_graph_cache_misses` are `null`, and `speed` holds the MLX speed
-  settings (`quantize`, `cache_limit_gb`, `compile_frame`, `fast_first_frames`).
-  `model.load_failed` is unchanged.
-  `GET /health` is unchanged.
-- **Speed and memory.** Measured on an Apple M5 with 16 GB. The speed columns give the range of
-  the per-case medians (10 runs each) over the five benchmark cases; the slowest single first
-  audio was 0.42 s at 8-bit and 0.68 s at bf16. Peak memory is the server's physical footprint
-  after medium-length requests:
+| `weights` | Checkpoint | Example |
+| --- | --- | --- |
+| `bf16` | No `quantization` block | `mlx-community/Breeze-TTS-2-mlx` |
+| `8bit` | mxfp8, 8 bits | `mlx-community/Breeze-TTS-2-mlx-8bit` |
+| `mixed` | Affine 8-bit: bf16 with the depth decoder's linear layers in int8 | the output of `scripts/make_mixed_checkpoint.py` |
 
-  | Precision | First audio | Real-time factor | Peak memory |
-  | --- | --- | --- | --- |
-  | 8-bit | 0.32–0.41 s | 0.84–0.88 | 7.0 GB |
-  | bf16 | 0.49–0.55 s | 1.47–1.50 | 9.7 GB |
+Any other quantization, the PyTorch checkpoint (`"model_type": "breeze"`) and a directory without a
+readable `config.json` are refused at startup with the reason. `scripts/start_breeze_mac.sh` names
+the download command for each precision.
 
-  A real-time factor above 1 means audio is produced more slowly than it plays, so bf16 can't
-  stream in real time on this machine, and it pushed the Mac into swap during the run. Use 8-bit
-  on a 16 GB Mac. Output is comparable to the CUDA backend's, not identical: the numerics and
-  random streams differ, so a `seed` does not reproduce CUDA audio.
+### Speed settings
+
+Read from the environment at startup, each off unless set. `scripts/start_breeze_mac.sh` turns on
+the first four for its default and `--precision mixed`, with `--chunk-first 1 --chunk-max 1`; an
+explicitly set variable wins over the launcher's value.
+
+| Variable | Meaning |
+| --- | --- |
+| `BREEZE_MLX_QUANT=part:bits[,part:bits]` | Quantize parts of a bf16 checkpoint at load, affine: `depth` (the depth decoder) and/or `backbone`, with bits `2`, `3`, `4`, `5`, `6` or `8`. `depth:8` keeps the backbone exact |
+| `BREEZE_MLX_GROUP=N` | Group size for `BREEZE_MLX_QUANT` (default `64`) |
+| `BREEZE_MLX_COMPILE=1` | Run each frame's sampling and its 15 depth-decoder steps as one `mx.compile` graph |
+| `BREEZE_MLX_FAST_FIRST=N` | Send the first `N` frames one at a time, each decoded before the next frame is queued |
+| `BREEZE_MLX_CACHE_GB=N` | Cap MLX's buffer cache at `N` GB (it otherwise keeps every freed buffer for reuse) |
+
+The streamed audio does not depend on the chunk size: the server patches mlx-audio's streaming
+codec decode, which added the transposed convolutions' bias twice at every chunk boundary
+([Blaizzy/mlx-audio#1003](https://github.com/Blaizzy/mlx-audio/pull/1003)).
+
+### Startup log
+
+The server writes one JSON event per line to stdout. When the model is ready it writes
+`model.loaded` with `sample_rate`, `backend` (always `"mlx"`), `weights` (`"bf16"`, `"8bit"` or
+`"mixed"`), `device` (`"mlx:gpu"`), `warmup_ms` (the Metal kernel warmup before the first request)
+and `speed` (the speed settings in effect: `quantize`, `cache_limit_gb`, `compile_frame`,
+`fast_first_frames`). A load that fails writes `model.load_failed` instead.
 
 ### HTTP API
 
@@ -221,6 +201,21 @@ an event).
 
 **Client disconnect**: generation stops within one chunk, and the GPU is released.
 
+**Slow readers**: a single send blocked for 30 s ends the stream, and so does a client that reads
+slower than half of real time once a 30 s grace period is used up; both release the GPU. macOS has
+no `TCP_USER_TIMEOUT`, so the kernel never drops the socket of a client that stops reading: after
+the stream ends it stays open until the client closes it or the server shuts down.
+
+**Context limit**: the backbone's context is 2,048 tokens (BC-47). A piece's prompt (instruction,
+any reference transcript and codes, and the text) counts at its exact length, and under CFG the
+longer of its two rows counts. What is left, up to `max_new_tokens`, is the most audio the piece
+can generate; a first piece with no room gets `400 text_too_long`.
+
+**Seed**: the same `seed`, text, reference and settings give the same audio on the same build of
+this server with the same speed settings (`BREEZE_MLX_COMPILE` draws its random numbers
+differently). They don't reproduce the audio of the C++ server or of BreezeBlue's PyTorch code: the
+numerics and random streams differ.
+
 **Errors**:
 
 | Status | Code | Message |
@@ -317,6 +312,12 @@ prefix the voice would build → `400 voice_too_long` if it leaves fewer than th
 (`409`); encode (`500 internal_error` if the codes no voice can hold, `400 voice_too_long` if a
 re-sized frame count no longer fits); named voice: write the file (`409 voice_exists` on a name
 clash found at commit, `500 voice_write_failed` on a write failure).
+
+A saved voice stores its reference as codec codes, with a fingerprint of the codec that made them;
+at startup a voice file whose fingerprint doesn't match the running codec is skipped. Voices saved
+by this server's earlier CUDA releases have the same fingerprint and load, but they were encoded
+by PyTorch rather than MLX, so they may sound slightly different from the same reference
+registered again here.
 
 Unnamed ids are `v_` followed by 16 lowercase hex characters, derived deterministically from the
 audio bytes and the transcript. Unnamed voices live in memory only, at most 64 of them, and the
@@ -617,46 +618,3 @@ These C++ choices are unconventional but are kept for compatibility, not fixed:
   requested).
 - Per-piece seed `seed + i`, `ref_text` overriding a voice's stored transcript, the unnamed voice
   id format, the 64-entry unnamed voice cap, WebSocket on a separate port, and no authentication.
-
-### Fast Inference Options
-
-Both the CLI and API use eager streaming by default and skip graph warmup. Pass `--fast-all` to enable the best configuration for every inference stage when the additional cold-start time is acceptable. Each stage can also be controlled independently:
-
-| Stage | Fast parameter | Disabled | Enabled |
-| --- | --- | --- | --- |
-| Text encoder | `--[no-]fast-text-encoder` | Native eager forward | Static CUDA Graph selected by CFG shape and text-length bucket |
-| Backbone prefill | `--[no-]fast-backbone-prefill` | Native eager prefill | CUDA Graph selected by CFG shape and prompt-length bucket |
-| Backbone decode | `--[no-]fast-backbone-decode` | Native eager token step | StaticCache-backed graph selected by CFG shape |
-| Depth decoder | `--[no-]fast-depth-decoder` | Native eager depth loop | Full-graph compilation with CFG-shape CUDA Graphs |
-| Codec | `--[no-]fast-codec` | Eager streaming decode | Single-request streaming CUDA Graph with one-frame chunks |
-
-Individual stage flags are intended for profiling and debugging.
-
-`--attn-implementation {eager,sdpa}` (default `eager`) selects the attention kernel for the
-backbone and text encoder. The fast text-encoder stage always runs `sdpa` for graph capture
-regardless of this setting. On an RTX 4090 with `--fast-all`, `sdpa` was no faster than `eager`
-(about 9% slower on a ~2000-character request) but used about 2.7 GB less peak VRAM.
-FlashAttention 2 is not offered: Hugging Face's FA2 path rejects the backbone's 4D attention
-masks in both eager and fast modes.
-
-#### Startup time and the compile cache
-
-The fast path captures every CUDA graph again on each start. A captured graph is bound to live device memory (its static buffers, the KV cache, the shared graph pool), and neither PyTorch nor CUDA can serialize one, so capture is unavoidable. Most of the warmup time is not capture, though: it is `torch.compile` of the depth decoder and the codec's SnakeBeta activations, which runs lazily during the eager warmup passes before capture. That work is cacheable, and torch caches it on disk by default, but in the system temp directory, which Ubuntu and WSL clear on boot.
-
-The server pins that cache to a persistent location, chosen in this order: `--compile-cache-dir`, then an existing `TORCHINDUCTOR_CACHE_DIR`, then `./.cache/torchinductor`. It also stores torch's own source-tree hash there (`torch_key.json`), which Inductor otherwise recomputes on every start by reading every Python file in the torch package; the stored value is reused while the torch version, install path, wheel `RECORD`, and the sizes and mtimes of that source tree are all unchanged. Checking that costs about 1.6 s on native Windows against 12 s for the hash after a reboot; on WSL2 with the environment on a Windows drive the directory listing itself is slow enough that it is roughly break-even. After every fast warmup the server writes `warmup_manifest.json` next to the cache with per-stage timings, torch's per-phase compile timers, and cache hit/miss counters, and prints a one-line summary such as `fast warmup: 33668 ms (fx graph cache hits 65 / misses 0)`. A warm start shows hits and no misses; a cold one shows the reverse.
-
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--compile-cache-dir PATH` | env or `./.cache/torchinductor` | Where compiled kernels persist between starts |
-
-Measured on an RTX 4090 with `--fast-all` (warmup only, after the checkpoint is loaded):
-
-| Start | Windows native | WSL2 (repo on a Windows drive) |
-| --- | --- | --- |
-| Empty cache | 102 s | 157 s |
-| Warm cache, torch hash recomputed | 50 s | 79 s |
-| Warm cache, torch hash reused | 34 s | not measured |
-
-What remains on a warm start is capture and its eager warmup passes (about 10 s for the 63 text-encoder and prefill graphs), the codec (about 3 s), and Dynamo re-tracing the compiled depth decoder (about 13 s), which torch 2.9 cannot cache for module compiles: its experimental precompile cache was tried and made startup slower.
-
-On Linux, Triton builds a small helper with `gcc` the first time it populates a cache directory. Run the server from a directory other than the repo root when doing that: gcc treats a `./specs` directory in its working directory as a spec file and aborts.

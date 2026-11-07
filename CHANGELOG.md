@@ -4,6 +4,46 @@ All notable changes to this project are documented here. See
 `specs/003-cpp-compatible-api/spec.md` for the full breaking-changes list and rationale (IDs
 `BC-nn`).
 
+## Unreleased
+
+### Removed: everything but Apple Silicon
+
+This fork now runs only on Apple Silicon Macs, through MLX. The HTTP and WebSocket API, voice
+clone, design and direction, saved voices, `GET /v1/audio/speech.wav`, CORS and every limit are
+unchanged. For NVIDIA GPUs, use
+[northcraftfoundries/breeze-tts2-fast-streaming-api](https://github.com/northcraftfoundries/breeze-tts2-fast-streaming-api)
+or BreezeBlue's [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts).
+
+- The CUDA backend and its fast path are gone: the PyTorch model code, the CUDA graphs and
+  `torch.compile` warmup (`configs/fast.json`, the Inductor compile cache), the cuDNN pin around
+  reference encoding, and `infer.py`. The launch options `--fast-all`, every `--fast-*` stage,
+  `--attn-implementation` and `--compile-cache-dir` no longer exist (an unknown option stops
+  startup). `--backend mlx` is still accepted; `--backend cuda` is refused with a pointer to the
+  projects above.
+- `scripts/start_breeze.sh`, `scripts/start_breeze.ps1` and `docker/` are removed;
+  `scripts/start_breeze_mac.sh` is the launcher.
+- The server checks the machine (Apple Silicon, at least 16 GB) and needs an MLX checkpoint: the
+  PyTorch checkpoint, or a directory without a readable `config.json`, is refused at startup.
+- `model.loaded` no longer has the CUDA fields `compile_cache_dir`, `torch_key`,
+  `fx_graph_cache_hits` and `fx_graph_cache_misses`; `backend` is always `"mlx"`.
+- Dependencies: `qwen-tts` (and with it `torchaudio`, `accelerate`, `gradio`, `onnxruntime`) is no
+  longer installed; `librosa` is listed directly. `torch` stays, CPU only, for the prompt and code
+  tensors the routes build.
+- Tests: the CUDA GPU suite (`tests/gpu/`, the `gpu` marker, `BREEZE_MODEL`) is removed. The
+  optional tokenizer-parity check in the MLX suite reads the official checkpoint from
+  `BREEZE_OFFICIAL_MODEL`.
+
+### Changed
+
+- `scripts/start_breeze_mac.sh` now defaults to the real-time mixed build (bf16 backbone, int8
+  depth decoder), from the ready-made checkpoint
+  [Shoof/Gust-MLX](https://huggingface.co/Shoof/Gust-MLX). `--precision mixed` builds the same
+  model at load from the bf16 conversion; `--precision 8bit` and `bf16` are unchanged. A snapshot
+  directory without its weights index counts as missing, so the launcher prints the download
+  command instead of starting the server on a partial download.
+- `docs/api.md`: the MLX facts that were listed as "Differences on the MLX backend" are now the
+  reference itself (machine and checkpoint, speed settings, startup log, slow readers on macOS).
+
 ## 2.2.0 — 2026-10-04
 
 ### Added
